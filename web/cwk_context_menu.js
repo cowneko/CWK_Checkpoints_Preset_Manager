@@ -50,7 +50,7 @@ function _overlay() {
   return el;
 }
 
-// ─── Context menu ─────────────────────────────────────────────────────────────
+// ─── Context menu ───────────────────────────────────���─────────────────────────
 
 let _activeMenu = null;
 
@@ -185,7 +185,8 @@ export function showImagePicker(modelName, images, onPick) {
 
 /**
  * Fetch and display all CivitAI versions for a model.
- * Shows newest-first; each row has a Download button that streams progress.
+ * Shows newest-first; each row has a Download button for non-installed versions
+ * and a Delete button for installed versions.
  *
  * modelName      : string
  * apiKey         : string
@@ -223,7 +224,7 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
 
   const list = box.querySelector("#cwk-ver-list");
 
-  // ── Fetch version list ─────────────────────────────────────────────────────
+  // ── Fetch version list ────���────────────────────────────────────────────────
   fetch(
     `/cwk/civitai/versions` +
     `?model=${encodeURIComponent(modelName)}` +
@@ -278,7 +279,7 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
                  </div>`
               : ""}
           </div>
-          <div style="flex-shrink:0">
+          <div style="flex-shrink:0;display:flex;flex-direction:column;gap:6px;align-items:stretch">
             ${!v.is_installed && v.download_url
               ? `<button class="cwk-ver-dl"
                    data-url="${_esc(v.download_url)}"
@@ -290,12 +291,22 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
                    ⬇ Download
                  </button>`
               : ""}
+            ${v.is_installed && v.filename
+              ? `<button class="cwk-ver-del"
+                   data-fn="${_esc(v.filename)}"
+                   style="padding:6px 12px;border-radius:6px;border:1px solid #f38ba8;
+                          background:transparent;color:#f38ba8;
+                          font-size:12px;font-weight:700;cursor:pointer;
+                          min-width:90px;text-align:center">
+                   🗑 Delete
+                 </button>`
+              : ""}
           </div>
         `;
         list.appendChild(row);
       }
 
-      // ── Wire up download buttons ─────────────────────────────────────────
+      // ── Wire up download buttons ───────────────────────────────────────────
       list.querySelectorAll(".cwk-ver-dl").forEach(btn => {
         btn.addEventListener("click", async () => {
           const dlUrl = btn.dataset.url;
@@ -357,6 +368,49 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
             btn.style.color      = "#1e1e2e";
             btn.title            = e.message;
             btn.disabled         = false;
+          }
+        });
+      });
+
+      // ── Wire up delete buttons ─────────────────────────────────────────────
+      list.querySelectorAll(".cwk-ver-del").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const fn = btn.dataset.fn;
+          if (!confirm(`Permanently delete "${fn}"?\n\nThis cannot be undone.`)) return;
+
+          btn.disabled    = true;
+          btn.textContent = "Deleting…";
+
+          try {
+            const res  = await fetch("/cwk/model", {
+              method:  "DELETE",
+              headers: { "Content-Type": "application/json" },
+              body:    JSON.stringify({ model: fn }),
+            });
+            const data = await res.json();
+            if (data.ok) {
+              // Grey out the whole row to show it's gone
+              const row = btn.closest("div[style*='background:#1e2335']");
+              if (row) {
+                row.style.opacity  = "0.4";
+                row.style.pointerEvents = "none";
+              }
+              btn.textContent      = "✓ Deleted";
+              btn.style.background = "transparent";
+              btn.style.color      = "#6c7086";
+              btn.style.border     = "1px solid #45475a";
+              onDownloadDone?.(); // refresh the model list in the panel
+            } else {
+              btn.textContent  = "✗ Failed";
+              btn.style.color  = "#f38ba8";
+              btn.title        = data.errors?.join(", ") ?? "Delete failed";
+              btn.disabled     = false;
+            }
+          } catch (e) {
+            btn.textContent  = "✗ Failed";
+            btn.style.color  = "#f38ba8";
+            btn.title        = e.message;
+            btn.disabled     = false;
           }
         });
       });
