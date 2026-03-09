@@ -167,6 +167,7 @@ export function injectStyles() {
       width:270px; flex-shrink:0; background:#181d2e;
       border-left:1px solid #2a2f45; padding:18px 16px;
       overflow-y:auto; display:flex; flex-direction:column; gap:14px;
+      min-height:0;
     }
     .cwk-sidebar::-webkit-scrollbar { width:5px; }
     .cwk-sidebar::-webkit-scrollbar-track { background:#1a2035; }

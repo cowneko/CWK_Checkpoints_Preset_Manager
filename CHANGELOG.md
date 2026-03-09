@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.1.0] — 2026-03-09
+
+### Added
+
+#### External CLIP & VAE Support
+- New **CLIP** and **VAE** dropdown rows on the canvas node — select `embedded` (default) or any external CLIP/VAE model from ComfyUI's `clip`/`vae` folders
+- New **CLIP** and **VAE** dropdown selectors in the Model Browser sidebar preset editor
+- `clip_name` and `vae_name` saved as part of per-model presets — each model remembers its preferred CLIP and VAE
+- CLIP and VAE lists populated dynamically from ComfyUI's folder paths, with `embedded` always first
+- Falls back gracefully to the checkpoint's embedded CLIP/VAE if an external file fails to load
+
+#### Node (nodes.py)
+- `get_clip_list()` and `get_vae_list()` helper functions for listing available models
+- `_load_external_clip()` and `_load_external_vae()` loaders for external model files
+- New optional inputs: `override_clip_name` and `override_vae_name` (with `(preset)` sentinel)
+- `default_preset()` now includes `clip_name: "embedded"` and `vae_name: "embedded"`
+
+#### Backend (server.py)
+- `GET /cwk/clips` — list all available CLIP models (with `embedded` first)
+- `GET /cwk/vaes` — list all available VAE models (with `embedded` first)
+
+#### Frontend
+- Two new `INFO_ROWS` entries in the canvas node for CLIP and VAE selection
+- `_loadClipVaeOptions()` fetches CLIP/VAE lists from `/cwk/clips` and `/cwk/vaes` at startup
+- Panel sidebar: new `sb-clip-name` and `sb-vae-name` `<select>` elements with divider
+- All preset workflows (Load, Reset, Update, Edit, Save) now include `clip_name` and `vae_name`
+
+---
+
 ## [1.0.0] — 2026-03-08
 
 ### Initial Release

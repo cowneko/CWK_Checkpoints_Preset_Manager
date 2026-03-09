@@ -25,7 +25,7 @@ const ARROW_W     = 20;
 const TITLE_H   = () => LiteGraph.NODE_TITLE_HEIGHT ?? 30;
 const SLOT_H    = () => LiteGraph.NODE_SLOT_HEIGHT  ?? 20;
 // Number of output slots: MODEL, CLIP, VAE, sampler_name, scheduler,
-// cfg, steps, clip_skip, width, height  (rng removed — applied internally)
+// cfg, steps, width, height
 const N_OUTPUTS = 9;
 
 function getSlotsBottom() {
@@ -39,6 +39,8 @@ let SAMPLERS   = ["euler","euler_ancestral","dpmpp_2m","dpmpp_2m_sde",
                   "dpmpp_sde","dpmpp_3m_sde","ddim","uni_pc","lcm"];
 let SCHEDULERS = ["normal","karras","exponential","sgm_uniform","simple","beta"];
 const RNGS     = ["cpu","gpu"];
+let CLIPS      = ["embedded"];
+let VAES       = ["embedded"];
 
 // Fetch the real lists from ComfyUI and patch INFO_ROWS in place
 async function _loadSamplerOptions() {
@@ -51,8 +53,34 @@ async function _loadSamplerOptions() {
     const schedulers = (inputs?.optional?.override_scheduler?.[0] ?? []).filter(v => v !== "(preset)");
     if (samplers.length)   { SAMPLERS   = samplers;   INFO_ROWS[0].options = samplers;   }
     if (schedulers.length) { SCHEDULERS = schedulers; INFO_ROWS[1].options = schedulers; }
+
+    // CLIP and VAE lists from override widgets
+    const clips = (inputs?.optional?.override_clip_name?.[0] ?? []).filter(v => v !== "(preset)");
+    const vaes  = (inputs?.optional?.override_vae_name?.[0]  ?? []).filter(v => v !== "(preset)");
+    if (clips.length) { CLIPS = clips; INFO_ROWS[8].options = clips; }
+    if (vaes.length)  { VAES  = vaes;  INFO_ROWS[9].options = vaes;  }
   } catch (e) {
     console.warn("[CWK] Could not load sampler options from object_info:", e);
+  }
+}
+
+// Also fetch from dedicated endpoints as fallback
+async function _loadClipVaeOptions() {
+  try {
+    const [clipRes, vaeRes] = await Promise.all([
+      fetch("/cwk/clips"),
+      fetch("/cwk/vaes"),
+    ]);
+    if (clipRes.ok) {
+      const { clips } = await clipRes.json();
+      if (clips?.length) { CLIPS = clips; INFO_ROWS[8].options = clips; }
+    }
+    if (vaeRes.ok) {
+      const { vaes } = await vaeRes.json();
+      if (vaes?.length) { VAES = vaes; INFO_ROWS[9].options = vaes; }
+    }
+  } catch (e) {
+    console.warn("[CWK] Could not load CLIP/VAE lists:", e);
   }
 }
 
@@ -65,11 +93,14 @@ const INFO_ROWS = [
   { key: "width",        label: "Width",     widget: "override_width",     type: "int",   min: 64,  max: 8192 },
   { key: "height",       label: "Height",    widget: "override_height",    type: "int",   min: 64,  max: 8192 },
   { key: "rng",          label: "RNG",       widget: "override_rng",       type: "list",  options: RNGS       },
+  { key: "clip_name",    label: "CLIP",      widget: "override_clip_name", type: "list",  options: CLIPS      },
+  { key: "vae_name",     label: "VAE",       widget: "override_vae_name",  type: "list",  options: VAES       },
 ];
 
 // Kick off the fetch immediately — by the time the user clicks a dropdown
-// it will have resolved. INFO_ROWS[0].options and [1].options are updated in place.
+// it will have resolved. INFO_ROWS options are updated in place.
 _loadSamplerOptions();
+_loadClipVaeOptions();
 
 const BTNS = [
   { label: "📂 Load Model",    key: "load"   },
@@ -181,11 +212,6 @@ function clampValue(row, val) {
 }
 
 // ─── Modal number editor ──────────────────────────────────────────────────────
-// Uses a full-screen backdrop so the input is never competing with the canvas
-// for focus. The backdrop intercepts all mouse events so LiteGraph never sees
-// them, which means nothing steals focus away from our input.
-
-// ─── Modal number editor ──────────────────────────────────────────────────────
 
 function openNumberModal(row, currentValue, screenX, screenY, onCommit) {
   closeNumberModal();
@@ -279,8 +305,6 @@ function openNumberModal(row, currentValue, screenX, screenY, onCommit) {
   backdrop.appendChild(dialog);
   document.body.appendChild(backdrop);
 
-  // Position dialog near the click, then clamp so it stays on screen
-  // We need to append first so we can read offsetWidth/offsetHeight
   requestAnimationFrame(() => {
     const dw = dialog.offsetWidth  || 200;
     const dh = dialog.offsetHeight || 120;
@@ -288,10 +312,9 @@ function openNumberModal(row, currentValue, screenX, screenY, onCommit) {
     const vh = window.innerHeight;
     const margin = 8;
 
-    let x = screenX + 8;   // slight offset so cursor doesn't overlap
+    let x = screenX + 8;
     let y = screenY + 8;
 
-    // Clamp to viewport
     if (x + dw + margin > vw) x = screenX - dw - 8;
     if (y + dh + margin > vh) y = screenY - dh - 8;
     x = Math.max(margin, x);
@@ -521,7 +544,9 @@ function drawNode(node, ctx) {
       ctx.fillText("▾", vr.x + vr.w - 5, ry + ROW_H/2);
       ctx.fillStyle = C.text; ctx.font = "11px Inter,system-ui,sans-serif";
       ctx.textAlign = "left";
-      ctx.fillText(String(val), vr.x + 6, ry + ROW_H/2, vr.w - 18);
+      // For long filenames (CLIP/VAE), truncate with ellipsis
+      const displayVal = String(val);
+      ctx.fillText(displayVal, vr.x + 6, ry + ROW_H/2, vr.w - 18);
     } else {
       ctx.font = "10px sans-serif"; ctx.textBaseline = "middle";
       ctx.fillStyle = (hovPart === "left")  ? C.arrowHov : C.textDim;
@@ -698,6 +723,8 @@ function handleButtonClick(node, key) {
             override_width:     preset.width,
             override_height:    preset.height,
             override_rng:       preset.rng,
+            override_clip_name: preset.clip_name,
+            override_vae_name:  preset.vae_name,
           };
           for (const [wn, val] of Object.entries(map)) {
             const w = getW(wn);
@@ -726,6 +753,8 @@ function handleButtonClick(node, key) {
           override_width:     preset.width        ?? 0,
           override_height:    preset.height       ?? 0,
           override_rng:       preset.rng          ?? "(preset)",
+          override_clip_name: preset.clip_name    ?? "(preset)",
+          override_vae_name:  preset.vae_name     ?? "(preset)",
         };
         for (const [wn, val] of Object.entries(map)) {
           const w = getW(wn);
@@ -750,6 +779,8 @@ function handleButtonClick(node, key) {
     if (p.width    != null && Number(p.width)     !== 0) preset.width        = Number(p.width);
     if (p.height   != null && Number(p.height)    !== 0) preset.height       = Number(p.height);
     if (p.rng      && p.rng !== "(preset)")               preset.rng          = p.rng;
+    if (p.clip_name)                                      preset.clip_name    = p.clip_name;
+    if (p.vae_name)                                       preset.vae_name     = p.vae_name;
     apiFetch("/cwk/preset", {
       method: "POST",
       body:   JSON.stringify({ model: modelName, preset }),

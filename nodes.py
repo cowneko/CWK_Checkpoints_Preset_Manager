@@ -6,6 +6,7 @@ Single node: CWK_ModelPresetManager
   - Merges stored preset with optional per-execution overrides
   - Outputs: MODEL, CLIP, VAE, sampler_name, scheduler, cfg, steps, width, height
   - Applies clip_skip and rng internally
+  - Supports external CLIP and VAE override (or embedded from checkpoint)
 """
 
 import json
@@ -14,6 +15,7 @@ from typing import Any, Dict, Tuple
 
 import folder_paths
 import comfy.samplers
+import comfy.sd
 
 # ─── Preset file path ─────────────────────────────────────────────────────────
 
@@ -22,6 +24,24 @@ _PRESETS_FILE = os.path.join(_NODE_DIR, "checkpoint_presets.json")
 
 
 # ─── Public helpers (re-used by server.py) ────────────────────────────────────
+
+def get_clip_list():
+    """Return list of available CLIP models with 'embedded' as first entry."""
+    try:
+        clips = folder_paths.get_filename_list("clip")
+    except Exception:
+        clips = []
+    return ["embedded"] + sorted(clips)
+
+
+def get_vae_list():
+    """Return list of available VAE models with 'embedded' as first entry."""
+    try:
+        vaes = folder_paths.get_filename_list("vae")
+    except Exception:
+        vaes = []
+    return ["embedded"] + sorted(vaes)
+
 
 def default_preset() -> Dict[str, Any]:
     samplers   = list(comfy.samplers.KSampler.SAMPLERS)
@@ -35,6 +55,8 @@ def default_preset() -> Dict[str, Any]:
         "width":        1024,
         "height":       1024,
         "rng":          "cpu",
+        "clip_name":    "embedded",
+        "vae_name":     "embedded",
     }
 
 
@@ -57,7 +79,7 @@ def save_presets(presets: Dict[str, Any]) -> None:
         print(f"[CWK_PresetManager] Error saving presets: {e}")
 
 
-# ─── RNG application ───��──────────────────────────────────────────────────────
+# ─── RNG application ──────────────────────────────────────────────────────────
 
 def _apply_rng(model, rng: str):
     """
@@ -131,6 +153,27 @@ def _apply_rng(model, rng: str):
     return model
 
 
+# ─── External CLIP / VAE loaders ──────────────────────────────────────────────
+
+def _load_external_clip(clip_name: str):
+    """Load an external CLIP model by filename."""
+    clip_path = folder_paths.get_full_path("clip", clip_name)
+    if not clip_path:
+        raise FileNotFoundError(f"[CWK] CLIP file not found: {clip_name}")
+    clip = comfy.sd.load_clip(ckpt_paths=[clip_path], embedding_directory=folder_paths.get_folder_paths("embeddings"))
+    return clip
+
+
+def _load_external_vae(vae_name: str):
+    """Load an external VAE model by filename."""
+    vae_path = folder_paths.get_full_path("vae", vae_name)
+    if not vae_path:
+        raise FileNotFoundError(f"[CWK] VAE file not found: {vae_name}")
+    sd = comfy.utils.load_torch_file(vae_path)
+    vae = comfy.sd.VAE(sd=sd)
+    return vae
+
+
 # ─── ComfyUI node ─────────────────────────────────────────────────────────────
 
 class CWK_ModelPresetManager:
@@ -154,6 +197,9 @@ class CWK_ModelPresetManager:
         samplers   = ["(preset)"] + list(comfy.samplers.KSampler.SAMPLERS)
         schedulers = ["(preset)"] + list(comfy.samplers.KSampler.SCHEDULERS)
 
+        clip_list = get_clip_list()
+        vae_list  = get_vae_list()
+
         return {
             "required": {
                 "model_name": (all_models if all_models else [""], {}),
@@ -167,6 +213,8 @@ class CWK_ModelPresetManager:
                 "override_width":     ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
                 "override_height":    ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
                 "override_rng":       (["(preset)", "cpu", "gpu"],),
+                "override_clip_name": (["(preset)"] + clip_list,),
+                "override_vae_name":  (["(preset)"] + vae_list,),
             },
         }
 
@@ -196,6 +244,8 @@ class CWK_ModelPresetManager:
         override_width:     int   = 0,
         override_height:    int   = 0,
         override_rng:       str   = "(preset)",
+        override_clip_name: str   = "(preset)",
+        override_vae_name:  str   = "(preset)",
     ) -> Tuple:
         # ── Load the checkpoint / diffusion model ─────────────────────────────
         from nodes import CheckpointLoaderSimple
@@ -221,6 +271,26 @@ class CWK_ModelPresetManager:
         width        = int(override_width)     if override_width       != 0  else int(p["width"])
         height       = int(override_height)    if override_height      != 0  else int(p["height"])
         rng          = override_rng            if override_rng        != "(preset)" else p["rng"]
+        clip_name    = override_clip_name      if override_clip_name  != "(preset)" else p.get("clip_name", "embedded")
+        vae_name     = override_vae_name       if override_vae_name   != "(preset)" else p.get("vae_name",  "embedded")
+
+        # ── Load external CLIP if not embedded ────────────────────��───────────
+        if clip_name and clip_name != "embedded":
+            try:
+                clip = _load_external_clip(clip_name)
+                print(f"[CWK] External CLIP loaded: {clip_name}")
+            except Exception as e:
+                print(f"[CWK] Warning: could not load external CLIP '{clip_name}': {e}")
+                print(f"[CWK] Falling back to embedded CLIP")
+
+        # ── Load external VAE if not embedded ─────────────────────────────────
+        if vae_name and vae_name != "embedded":
+            try:
+                vae = _load_external_vae(vae_name)
+                print(f"[CWK] External VAE loaded: {vae_name}")
+            except Exception as e:
+                print(f"[CWK] Warning: could not load external VAE '{vae_name}': {e}")
+                print(f"[CWK] Falling back to embedded VAE")
 
         # ── Apply clip_skip directly to the CLIP model ────────────────────────
         try:
@@ -236,7 +306,8 @@ class CWK_ModelPresetManager:
             f"[CWK] Loaded: {model_name} | "
             f"sampler={sampler_name} sched={scheduler} cfg={cfg} "
             f"steps={steps} clip_skip={clip_skip} "
-            f"res={width}x{height} rng={rng}"
+            f"res={width}x{height} rng={rng} "
+            f"clip={clip_name} vae={vae_name}"
         )
 
         return (model, clip, vae, sampler_name, scheduler, cfg, steps, width, height)

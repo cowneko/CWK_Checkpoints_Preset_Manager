@@ -12,6 +12,7 @@ const DEFAULTS = {
   sampler_name: "euler", scheduler: "normal",
   cfg: 7.0, steps: 20, clip_skip: -2,
   width: 1024, height: 1024, rng: "cpu",
+  clip_name: "embedded", vae_name: "embedded",
 };
 
 const NSFW_R = 2;
@@ -214,6 +215,21 @@ export class ModelBrowserPanel {
               </div>
             </div>
           </div>
+
+          <hr class="cwk-sidebar-divider"/>
+
+          <div class="cwk-sidebar-section">
+            <div class="cwk-sidebar-title">CLIP:</div>
+            <select class="cwk-sidebar-input" id="sb-clip-name" disabled>
+              <option value="embedded">embedded</option>
+            </select>
+          </div>
+          <div class="cwk-sidebar-section">
+            <div class="cwk-sidebar-title">VAE:</div>
+            <select class="cwk-sidebar-input" id="sb-vae-name" disabled>
+              <option value="embedded">embedded</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -349,7 +365,7 @@ export class ModelBrowserPanel {
     return !!this._civitaiKey;
   }
 
-  // ── Dropdowns ──────────────────���──────────────────────────────────────────────
+  // ── Dropdowns ─────────────────────────────────────────────────────────────────
 
   async _populateDropdowns() {
     try {
@@ -362,6 +378,18 @@ export class ModelBrowserPanel {
     } catch {
       this._fillSelect("sb-sampler",   ["euler","euler_ancestral","dpmpp_2m","dpmpp_sde","ddim"]);
       this._fillSelect("sb-scheduler", ["normal","karras","exponential","sgm_uniform","simple"]);
+    }
+
+    // Populate CLIP and VAE dropdowns from dedicated endpoints
+    try {
+      const [clipRes, vaeRes] = await Promise.all([
+        apiFetch("/cwk/clips"),
+        apiFetch("/cwk/vaes"),
+      ]);
+      if (clipRes.clips?.length) this._fillSelect("sb-clip-name", clipRes.clips);
+      if (vaeRes.vaes?.length)   this._fillSelect("sb-vae-name",  vaeRes.vaes);
+    } catch (e) {
+      console.warn("[CWK] Could not load CLIP/VAE lists:", e);
     }
   }
 
@@ -427,7 +455,6 @@ export class ModelBrowserPanel {
         btn.disabled    = true;
         btn.textContent = "Reloading…";
         await this._reloadModels();
-        // Auto-fetch thumbnails for any new models that don't have them yet
         await this._fetchNewModelThumbnails();
         btn.disabled    = false;
         btn.textContent = "🔄 Reload Models";
@@ -449,7 +476,6 @@ export class ModelBrowserPanel {
   async open(onLoadCallback) {
     this._onLoadCallback = onLoadCallback;
 
-    // ── Restore saved size ─────────────────────────────────────────────────────
     try {
       const s = JSON.parse(localStorage.getItem("cwk_panel_size") || "null");
       if (s?.w && s?.h) {
@@ -458,7 +484,6 @@ export class ModelBrowserPanel {
       }
     } catch {}
 
-    // ── Restore saved position ─────────────────────────────────────────────────
     try {
       const p = JSON.parse(localStorage.getItem("cwk_panel_pos") || "null");
       if (p?.x != null && p?.y != null) {
@@ -499,7 +524,7 @@ export class ModelBrowserPanel {
     document.getElementById("cwk-filter-type-menu")?.classList.remove("open");
   }
 
-  // ── Reload model list (lightweight — no CivitAI fetch) ────────────────────────
+  // ── Reload model list ─────────────────────────────────────────────────────────
 
   async _reloadModels() {
     try {
@@ -513,7 +538,7 @@ export class ModelBrowserPanel {
     }
   }
 
-  // ── Fetch thumbnails only for models that don't have them yet ─────────────────
+  // ── Fetch thumbnails only for new models ──────────────────────────────────────
 
   async _fetchNewModelThumbnails() {
     if (!this._civitaiKey) return;
@@ -822,11 +847,9 @@ export class ModelBrowserPanel {
             this._setStatus("✓ Deleted — model removed from list");
             await this._reloadModels();
           } else {
-            // Bust cache and reload the model list
             await new Promise(r => setTimeout(r, 500));
             await this._reloadModels();
             if (civitai && registeredName) {
-              // Server already fetched metadata inline — apply it directly
               const m = this._models.find(m => m.name === registeredName);
               if (m) {
                 m.civitai = civitai;
@@ -836,7 +859,6 @@ export class ModelBrowserPanel {
                 this._setStatus("✓ Download complete — restart ComfyUI to load the model");
               }
             } else {
-              // Fallback: run the SSE thumbnail fetch for models without one
               this._setStatus("✓ Download complete — fetching thumbnail…");
               await this._fetchNewModelThumbnails();
             }
@@ -910,6 +932,8 @@ export class ModelBrowserPanel {
     this._setSelectValue("sb-sampler",   p.sampler_name);
     this._setSelectValue("sb-scheduler", p.scheduler);
     this._setSelectValue("sb-rng",       p.rng ?? "cpu");
+    this._setSelectValue("sb-clip-name", p.clip_name ?? "embedded");
+    this._setSelectValue("sb-vae-name",  p.vae_name  ?? "embedded");
     this._setStatus(name);
   }
 
@@ -930,6 +954,8 @@ export class ModelBrowserPanel {
       rng:          document.getElementById("sb-rng").value,
       width:        parseInt(document.getElementById("sb-width").value, 10),
       height:       parseInt(document.getElementById("sb-height").value, 10),
+      clip_name:    document.getElementById("sb-clip-name").value,
+      vae_name:     document.getElementById("sb-vae-name").value,
     };
   }
 
@@ -938,7 +964,8 @@ export class ModelBrowserPanel {
   _setEditMode(on) {
     this._editMode = on;
     for (const id of ["sb-sampler","sb-scheduler","sb-cfg","sb-steps",
-                       "sb-clip-skip","sb-rng","sb-width","sb-height"]) {
+                       "sb-clip-skip","sb-rng","sb-width","sb-height",
+                       "sb-clip-name","sb-vae-name"]) {
       const el = document.getElementById(id);
       if (el) el.disabled = !on;
     }
@@ -966,7 +993,7 @@ export class ModelBrowserPanel {
     this.hide();
   }
 
-  // ── Check Updates ─────────────────────────────────────────────────────────────
+  // ── Check Updates ────────────────────────────────────────────────────────���────
 
   async _checkUpdates() {
     if (!this._civitaiKey) {

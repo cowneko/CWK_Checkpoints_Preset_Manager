@@ -13,7 +13,7 @@ import aiohttp
 from aiohttp import web
 
 import folder_paths
-from .nodes import load_presets, save_presets, default_preset
+from .nodes import load_presets, save_presets, default_preset, get_clip_list, get_vae_list
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -395,7 +395,7 @@ async def handle_validate_key(req: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(e)})
 
 
-# ── Favourite ─────────────────────────────────────────���────────────────────────
+# ── Favourite ─────────────────────────────────────────────────────────────────
 
 async def handle_set_favorite(req: web.Request) -> web.Response:
     try:
@@ -804,6 +804,18 @@ async def handle_get_meta(req: web.Request) -> web.Response:
     return web.json_response(_load_meta(name))
 
 
+# ─── CLIP / VAE list endpoints ────────────────────────────────────────────────
+
+async def handle_list_clips(req: web.Request) -> web.Response:
+    """Return list of available CLIP models (with 'embedded' first)."""
+    return web.json_response({"clips": get_clip_list()})
+
+
+async def handle_list_vaes(req: web.Request) -> web.Response:
+    """Return list of available VAE models (with 'embedded' first)."""
+    return web.json_response({"vaes": get_vae_list()})
+
+
 # ─── Download handler (SSE progress stream) ───────────────────────────────────
 
 async def handle_download_version(req: web.Request) -> web.StreamResponse:
@@ -881,14 +893,11 @@ async def handle_download_version(req: web.Request) -> web.StreamResponse:
         _bust_folder_cache()
 
         # ── Fetch CivitAI metadata right now using the absolute path ──────────
-        # (folder_paths may not have rescanned yet — hash by abs path directly)
         loop = asyncio.get_event_loop()
         try:
             async with aiohttp.ClientSession(headers=_headers(api_key)) as session:
                 info = await _lookup_by_path(save_path, filename, session, loop)
             if info.get("thumbnail"):
-                # Derive the registered model name (subfolder/filename.ext)
-                # by finding which folder_paths root contains save_dir
                 registered_name = filename
                 for folder_type in ("checkpoints", "diffusion_models"):
                     try:
@@ -959,4 +968,6 @@ def register_routes(app: web.Application) -> None:
     r.add_post  ("/cwk/civitai/refresh",              handle_refresh_civitai)
     r.add_static("/cwk/local_thumbnails",             LOCAL_THUMBS_DIR, show_index=False)
     r.add_get   ("/cwk/civitai/meta",                 handle_get_meta)
+    r.add_get   ("/cwk/clips",                        handle_list_clips)
+    r.add_get   ("/cwk/vaes",                         handle_list_vaes)
     print("[CWK_PresetManager] Routes registered.")
