@@ -79,7 +79,6 @@ function makeDraggable(panel, handle) {
       handle.classList.remove("dragging");
       window.removeEventListener("mousemove", mv);
       window.removeEventListener("mouseup", up);
-      // ── Save position ──────────────────────────────────────────
       localStorage.setItem("cwk_panel_pos", JSON.stringify({
         x: parseFloat(panel.style.left),
         y: parseFloat(panel.style.top),
@@ -233,6 +232,10 @@ export class ModelBrowserPanel {
             title="Re-fetch ALL metadata from CivitAI, ignoring existing cache">
             ↺ Rebuild Cache
           </button>
+          <button class="cwk-btn cwk-btn-secondary" id="cwk-reload-btn"
+            title="Reload the model list from disk without fetching CivitAI data">
+            🔄 Reload Models
+          </button>
           <button class="cwk-btn cwk-btn-secondary" id="cwk-updates-btn"
             title="Check CivitAI for newer versions of your models">
             🔍 Check Updates
@@ -251,7 +254,7 @@ export class ModelBrowserPanel {
     document.body.appendChild(this._panel);
     makeDraggable(this._panel, document.getElementById("cwk-drag-handle"));
 
-    // ── Resize handle ─────────────────────────────────────────────
+    // ── Resize handle ──────────────────────────────────────────────────────────
     const resizeHandle = document.createElement("div");
     resizeHandle.className = "cwk-resize-handle";
     const resizeInner = document.createElement("div");
@@ -268,7 +271,6 @@ export class ModelBrowserPanel {
       document.removeEventListener("mousemove", onResizeMove);
       document.removeEventListener("mouseup",   onResizeUp);
       document.body.style.userSelect = "";
-      // ── Save size ──────────────────────────────────────────────
       localStorage.setItem("cwk_panel_size", JSON.stringify({
         w: parseFloat(this._panel.style.width),
         h: parseFloat(this._panel.style.height),
@@ -288,7 +290,6 @@ export class ModelBrowserPanel {
       document.addEventListener("mousemove", onResizeMove);
       document.addEventListener("mouseup",   onResizeUp);
     });
-    // ── end resize ────────────────────────────────────────────────
 
     this._bindFilterDropdown();
     this._populateDropdowns();
@@ -348,7 +349,7 @@ export class ModelBrowserPanel {
     return !!this._civitaiKey;
   }
 
-  // ── Dropdowns ─────────────────────────────────────────────────────────────────
+  // ── Dropdowns ──────────────────���──────────────────────────────────────────────
 
   async _populateDropdowns() {
     try {
@@ -419,6 +420,19 @@ export class ModelBrowserPanel {
         this._fetchCivitAI(true, true);
       });
 
+    // ── Reload Models button ───────────────────────────────────────────────────
+    document.getElementById("cwk-reload-btn")
+      .addEventListener("click", async () => {
+        const btn = document.getElementById("cwk-reload-btn");
+        btn.disabled    = true;
+        btn.textContent = "Reloading…";
+        await this._reloadModels();
+        // Auto-fetch thumbnails for any new models that don't have them yet
+        await this._fetchNewModelThumbnails();
+        btn.disabled    = false;
+        btn.textContent = "🔄 Reload Models";
+      });
+
     document.getElementById("cwk-updates-btn")
       .addEventListener("click", () => this._checkUpdates());
 
@@ -435,7 +449,7 @@ export class ModelBrowserPanel {
   async open(onLoadCallback) {
     this._onLoadCallback = onLoadCallback;
 
-    // ── Restore saved size ─────────────────────────────────────────
+    // ── Restore saved size ─────────────────────────────────────────────────────
     try {
       const s = JSON.parse(localStorage.getItem("cwk_panel_size") || "null");
       if (s?.w && s?.h) {
@@ -444,7 +458,7 @@ export class ModelBrowserPanel {
       }
     } catch {}
 
-    // ── Restore saved position ─────────────────────────────────────
+    // ── Restore saved position ─────────────────────────────────────────────────
     try {
       const p = JSON.parse(localStorage.getItem("cwk_panel_pos") || "null");
       if (p?.x != null && p?.y != null) {
@@ -483,6 +497,116 @@ export class ModelBrowserPanel {
     this._fetchAbort = null;
     this._setProgress(0, 0);
     document.getElementById("cwk-filter-type-menu")?.classList.remove("open");
+  }
+
+  // ── Reload model list (lightweight — no CivitAI fetch) ────────────────────────
+
+  async _reloadModels() {
+    try {
+      this._models = await apiFetch("/cwk/models");
+      this._applyFilter(document.getElementById("cwk-search")?.value ?? "");
+      document.getElementById("cwk-total-count").textContent =
+        `${this._models.length} model${this._models.length !== 1 ? "s" : ""}`;
+      this._setStatus(`✓ ${this._models.length} model${this._models.length !== 1 ? "s" : ""} loaded`);
+    } catch (e) {
+      this._setStatus(`✗ Reload failed: ${e.message}`, true);
+    }
+  }
+
+  // ── Fetch thumbnails only for models that don't have them yet ─────────────────
+
+  async _fetchNewModelThumbnails() {
+    if (!this._civitaiKey) return;
+
+    const newModels = this._models.filter(m => !m.civitai?.thumbnail);
+    if (!newModels.length) {
+      this._setStatus("✓ All models already have thumbnails");
+      return;
+    }
+
+    this._setStatus(`Fetching thumbnails for ${newModels.length} new model${newModels.length !== 1 ? "s" : ""}…`);
+
+    this._fetchAbort?.abort();
+    const abort = new AbortController();
+    this._fetchAbort = abort;
+
+    const total = newModels.length;
+    for (const m of newModels) { m._resolving = true; this._updateCard(m); }
+    this._setProgress(0, total);
+
+    let resolved = 0, thumbsFound = 0;
+
+    try {
+      const response = await fetch("/cwk/civitai/fetch/stream", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          models:  newModels.map(m => m.name),
+          api_key: this._civitaiKey,
+          force:   false,
+          rebuild: false,
+        }),
+        signal: abort.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const reader = response.body.getReader();
+      const dec    = new TextDecoder();
+      let   buf    = "";
+
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n"); buf = parts.pop();
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data:")) continue;
+          let p; try { p = JSON.parse(line.slice(5)); } catch { continue; }
+
+          if (p.error === "api_key_required" || p.error === "api_key_invalid") {
+            this._setStatus(`✗ ${p.message}`, true);
+            this._civitaiKey = "";
+            localStorage.removeItem("cwk_civitai_key");
+            this._updateKeyLabel();
+            for (const m of newModels) { m._resolving = false; this._updateCard(m); }
+            this._setProgress(0, 0);
+            this._fetchAbort = null;
+            return;
+          }
+          if (p.done && !p.model) break outer;
+
+          const model = this._models.find(m => m.name === p.model);
+          if (model) {
+            model.civitai    = p.info;
+            model._resolving = false;
+            if (p.info?.thumbnail) thumbsFound++;
+            this._updateCard(model);
+          }
+          resolved++;
+          this._setProgress(resolved, total);
+          this._setStatus(
+            `Fetching… ${resolved} / ${total}` +
+            (thumbsFound ? ` · ${thumbsFound} 🖼` : "")
+          );
+        }
+      }
+
+      this._setStatus(
+        thumbsFound
+          ? `✓ ${thumbsFound} thumbnail${thumbsFound !== 1 ? "s" : ""} fetched for new models`
+          : `✓ No thumbnails found for new models (not on CivitAI)`
+      );
+    } catch (e) {
+      if (e.name !== "AbortError") {
+        this._setStatus(`✗ Thumbnail fetch failed: ${e.message}`, true);
+      }
+    } finally {
+      for (const m of newModels) { m._resolving = false; }
+      this._setProgress(0, 0);
+      this._fetchAbort = null;
+    }
   }
 
   // ── Filter ────────────────────────────────────────────────────────────────────
@@ -693,8 +817,30 @@ export class ModelBrowserPanel {
       {
         icon: "🔄", label: "Check for updates",
         disabled: !hasModelId,
-        action: () => showVersionChecker(model.name, key, () => {
-          this._setStatus("✓ Download complete — restart ComfyUI to use the new model.");
+        action: () => showVersionChecker(model.name, key, async (action, civitai, registeredName) => {
+          if (action === "deleted") {
+            this._setStatus("✓ Deleted — model removed from list");
+            await this._reloadModels();
+          } else {
+            // Bust cache and reload the model list
+            await new Promise(r => setTimeout(r, 500));
+            await this._reloadModels();
+            if (civitai && registeredName) {
+              // Server already fetched metadata inline — apply it directly
+              const m = this._models.find(m => m.name === registeredName);
+              if (m) {
+                m.civitai = civitai;
+                this._updateCard(m);
+                this._setStatus("✓ Download complete — thumbnail fetched");
+              } else {
+                this._setStatus("✓ Download complete — restart ComfyUI to load the model");
+              }
+            } else {
+              // Fallback: run the SSE thumbnail fetch for models without one
+              this._setStatus("✓ Download complete — fetching thumbnail…");
+              await this._fetchNewModelThumbnails();
+            }
+          }
         }),
       },
       {

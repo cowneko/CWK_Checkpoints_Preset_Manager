@@ -31,7 +31,7 @@ export function fmtSize(kb) {
   return `${Math.round(kb)} KB`;
 }
 
-// ─── Internal helper ──────────────────────────────────────────────────────────
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function _esc(str) {
   return String(str ?? "")
@@ -50,7 +50,7 @@ function _overlay() {
   return el;
 }
 
-// ─── Context menu ───────────────────────────────────���─────────────────────────
+// ─── Context menu ─────────────────────────────────────────────────────────────
 
 let _activeMenu = null;
 
@@ -58,10 +58,6 @@ export function closeContextMenu() {
   if (_activeMenu) { _activeMenu.remove(); _activeMenu = null; }
 }
 
-/**
- * Show a floating context menu.
- * items: Array of { icon?, label, action, danger?, disabled? } | "---"
- */
 export function showContextMenu(x, y, items) {
   closeContextMenu();
 
@@ -87,8 +83,8 @@ export function showContextMenu(x, y, items) {
       padding:8px 14px; cursor:pointer;
       display:flex; align-items:center; gap:8px;
       transition:background .1s;
-      ${item.danger   ? "color:#f38ba8;"                   : ""}
-      ${item.disabled ? "opacity:.4;pointer-events:none;"  : ""}
+      ${item.danger   ? "color:#f38ba8;"                  : ""}
+      ${item.disabled ? "opacity:.4;pointer-events:none;" : ""}
     `;
     el.innerHTML =
       `<span style="font-size:15px;width:18px;text-align:center">${item.icon ?? ""}</span>` +
@@ -103,25 +99,18 @@ export function showContextMenu(x, y, items) {
   document.body.appendChild(menu);
   _activeMenu = menu;
 
-  // Clamp to viewport after first paint
   requestAnimationFrame(() => {
     const r = menu.getBoundingClientRect();
     if (r.right  > window.innerWidth)  menu.style.left = (x - r.width)  + "px";
     if (r.bottom > window.innerHeight) menu.style.top  = (y - r.height) + "px";
   });
 
-  // Close on next outside click
   setTimeout(() =>
     document.addEventListener("click", closeContextMenu, { once: true }), 0);
 }
 
 // ─── Image picker modal ───────────────────────────────────────────────────────
 
-/**
- * Show a grid of CivitAI images so the user can pick one as the card thumbnail.
- * images  : array of { url, nsfwLevel? } objects, or plain URL strings
- * onPick  : (url: string) => void
- */
 export function showImagePicker(modelName, images, onPick) {
   const overlay = _overlay();
   const box     = document.createElement("div");
@@ -183,15 +172,6 @@ export function showImagePicker(modelName, images, onPick) {
 
 // ─── Version checker modal ────────────────────────────────────────────────────
 
-/**
- * Fetch and display all CivitAI versions for a model.
- * Shows newest-first; each row has a Download button for non-installed versions
- * and a Delete button for installed versions.
- *
- * modelName      : string
- * apiKey         : string
- * onDownloadDone : () => void   — called after a successful download
- */
 export function showVersionChecker(modelName, apiKey, onDownloadDone) {
   const overlay = _overlay();
   const box     = document.createElement("div");
@@ -224,7 +204,7 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
 
   const list = box.querySelector("#cwk-ver-list");
 
-  // ── Fetch version list ────���────────────────────────────────────────────────
+  // ── Fetch version list ─────────────────────────────────────────────────────
   fetch(
     `/cwk/civitai/versions` +
     `?model=${encodeURIComponent(modelName)}` +
@@ -255,64 +235,127 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
           background:#1e2335; border:1px solid #313552; border-radius:8px;
           padding:12px; display:flex; align-items:center; gap:12px;
         `;
-        row.innerHTML = `
-          ${thumb
-            ? `<img src="${_esc(thumb)}"
-                 style="width:48px;height:64px;object-fit:cover;
-                        border-radius:4px;flex-shrink:0"
-                 loading="lazy"/>`
-            : `<div style="width:48px;height:64px;background:#181d2e;border-radius:4px;
-                           display:flex;align-items:center;justify-content:center;
-                           font-size:20px;flex-shrink:0">🖼</div>`}
-          <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:13px;
-                        ${v.is_installed ? "color:#a6e3a1" : ""}">
-              ${_esc(v.name)}${v.is_installed ? " <span style='font-size:11px'>✓ installed</span>" : ""}
-            </div>
-            <div style="font-size:11px;color:#6c7086;margin-top:3px">
-              ${[v.base_model, size, date].filter(Boolean).map(_esc).join(" · ")}
-            </div>
-            ${v.filename
-              ? `<div style="font-size:10px;color:#45475a;margin-top:2px;
-                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-                   ${_esc(v.filename)}
-                 </div>`
-              : ""}
-          </div>
-          <div style="flex-shrink:0;display:flex;flex-direction:column;gap:6px;align-items:stretch">
-            ${!v.is_installed && v.download_url
-              ? `<button class="cwk-ver-dl"
-                   data-url="${_esc(v.download_url)}"
-                   data-fn="${_esc(v.filename)}"
-                   style="padding:6px 12px;border-radius:6px;border:none;
-                          background:#89b4fa;color:#1e1e2e;
-                          font-size:12px;font-weight:700;cursor:pointer;
-                          min-width:90px;text-align:center">
-                   ⬇ Download
-                 </button>`
-              : ""}
-            ${v.is_installed && v.filename
-              ? `<button class="cwk-ver-del"
-                   data-fn="${_esc(v.filename)}"
-                   style="padding:6px 12px;border-radius:6px;border:1px solid #f38ba8;
-                          background:transparent;color:#f38ba8;
-                          font-size:12px;font-weight:700;cursor:pointer;
-                          min-width:90px;text-align:center">
-                   🗑 Delete
-                 </button>`
-              : ""}
-          </div>
+
+        // ── Thumbnail ──────────────────────────────────────────────────────
+        const thumbEl = document.createElement("div");
+        thumbEl.style.cssText = `width:48px;height:64px;flex-shrink:0;border-radius:4px;overflow:hidden;background:#181d2e;display:flex;align-items:center;justify-content:center;font-size:20px;`;
+        if (thumb) {
+          const img = document.createElement("img");
+          img.src              = thumb;
+          img.loading          = "lazy";
+          img.style.cssText    = "width:100%;height:100%;object-fit:cover;";
+          thumbEl.appendChild(img);
+        } else {
+          thumbEl.textContent = "🖼";
+        }
+
+        // ── Info column ────────────────────────────────────────────────────
+        const infoCol = document.createElement("div");
+        infoCol.style.cssText = "flex:1;min-width:0;";
+
+        const nameEl = document.createElement("div");
+        nameEl.style.cssText = `font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;${v.is_installed ? "color:#a6e3a1;" : ""}`;
+        nameEl.textContent = v.name;
+
+        if (v.is_installed) {
+          const installedBadge = document.createElement("span");
+          installedBadge.style.cssText = "font-size:11px;color:#a6e3a1;";
+          installedBadge.textContent   = "✓ installed";
+          nameEl.appendChild(installedBadge);
+        }
+
+        if (v.early_access_ends) {
+          const deadline = new Date(v.early_access_ends);
+          const isEarlyAccess = deadline > new Date();
+          if (isEarlyAccess) {
+            const eaBadge = document.createElement("span");
+            eaBadge.textContent   = `⏳ Early Access · until ${deadline.toLocaleDateString()}`;
+            eaBadge.style.cssText = `
+              font-size:10px; font-weight:700;
+              background:#f9e2af; color:#1e1e2e;
+              border-radius:4px; padding:2px 6px;
+              white-space:nowrap;
+            `;
+            nameEl.appendChild(eaBadge);
+          }
+        }
+
+        const metaEl = document.createElement("div");
+        metaEl.style.cssText = "font-size:11px;color:#6c7086;margin-top:3px;";
+        metaEl.textContent   = [v.base_model, size, date].filter(Boolean).join(" · ");
+
+        const fileEl = document.createElement("div");
+        fileEl.style.cssText = "font-size:10px;color:#45475a;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+        fileEl.textContent   = v.filename ?? "";
+
+        // ── Per-row progress bar ───────────────────────────────────────────
+        const progressWrap = document.createElement("div");
+        progressWrap.style.cssText = `
+          display:none; margin-top:8px; height:4px; border-radius:2px;
+          background:#2a2f45; overflow:hidden;
         `;
+        const progressBar = document.createElement("div");
+        progressBar.style.cssText = `
+          height:100%; width:0%; background:#89b4fa;
+          transition:width .15s ease; border-radius:2px;
+        `;
+        progressWrap.appendChild(progressBar);
+
+        infoCol.appendChild(nameEl);
+        infoCol.appendChild(metaEl);
+        if (v.filename) infoCol.appendChild(fileEl);
+        infoCol.appendChild(progressWrap);
+
+        // ── Action buttons column ──────────────────────────────────────────
+        const actionsCol = document.createElement("div");
+        actionsCol.style.cssText = "flex-shrink:0;display:flex;flex-direction:column;gap:6px;align-items:stretch;";
+
+        if (!v.is_installed && v.download_url) {
+          const dlBtn = document.createElement("button");
+          dlBtn.className    = "cwk-ver-dl";
+          dlBtn.dataset.url  = v.download_url;
+          dlBtn.dataset.fn   = v.filename ?? "";
+          dlBtn.textContent  = "⬇ Download";
+          dlBtn.style.cssText = `
+            padding:6px 12px; border-radius:6px; border:none;
+            background:#89b4fa; color:#1e1e2e;
+            font-size:12px; font-weight:700; cursor:pointer; min-width:90px; text-align:center;
+          `;
+          actionsCol.appendChild(dlBtn);
+        }
+
+        if (v.is_installed) {
+          const delBtn = document.createElement("button");
+          delBtn.className      = "cwk-ver-del";
+          delBtn.dataset.model  = modelName;
+          delBtn.textContent    = "🗑 Delete";
+          delBtn.style.cssText  = `
+            padding:6px 12px; border-radius:6px; border:1px solid #f38ba8;
+            background:transparent; color:#f38ba8;
+            font-size:12px; font-weight:700; cursor:pointer; min-width:90px; text-align:center;
+          `;
+          actionsCol.appendChild(delBtn);
+        }
+
+        row.appendChild(thumbEl);
+        row.appendChild(infoCol);
+        row.appendChild(actionsCol);
         list.appendChild(row);
       }
 
       // ── Wire up download buttons ───────────────────────────────────────────
       list.querySelectorAll(".cwk-ver-dl").forEach(btn => {
         btn.addEventListener("click", async () => {
-          const dlUrl = btn.dataset.url;
-          const fn    = btn.dataset.fn;
+          const dlUrl      = btn.dataset.url;
+          const fn         = btn.dataset.fn;
+          const row        = btn.closest("div[style*='background:#1e2335']");
+          const infoCol    = row?.querySelector("div[style*='flex:1']");
+          const pWrap      = infoCol?.querySelector("div[style*='height:4px']");
+          const pBar       = pWrap?.firstElementChild;
+
           btn.disabled    = true;
           btn.textContent = "0%";
+          if (pWrap) pWrap.style.display = "block";
 
           try {
             const response = await fetch("/cwk/civitai/download", {
@@ -346,12 +389,19 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
 
                 if (p.progress !== undefined) {
                   btn.textContent = `${p.progress}%`;
+                  if (pBar) pBar.style.width = `${p.progress}%`;
                 }
                 if (p.done && !p.error) {
                   btn.textContent      = "✓ Done";
                   btn.style.background = "#a6e3a1";
                   btn.style.color      = "#1e1e2e";
-                  onDownloadDone?.();
+                  if (pBar) {
+                    pBar.style.width      = "100%";
+                    pBar.style.background = "#a6e3a1";
+                  }
+                  // Pass civitai metadata and registered name if the server
+                  // fetched it inline — panel can update the card immediately
+                  onDownloadDone?.("downloaded", p.civitai ?? null, p.registered_name ?? null);
                 }
                 if (p.error) {
                   btn.textContent      = "✗ Error";
@@ -359,6 +409,7 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
                   btn.style.color      = "#1e1e2e";
                   btn.title            = p.error;
                   btn.disabled         = false;
+                  if (pWrap) pWrap.style.display = "none";
                 }
               }
             }
@@ -368,6 +419,7 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
             btn.style.color      = "#1e1e2e";
             btn.title            = e.message;
             btn.disabled         = false;
+            if (pWrap) pWrap.style.display = "none";
           }
         });
       });
@@ -375,8 +427,8 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
       // ── Wire up delete buttons ─────────────────────────────────────────────
       list.querySelectorAll(".cwk-ver-del").forEach(btn => {
         btn.addEventListener("click", async () => {
-          const fn = btn.dataset.fn;
-          if (!confirm(`Permanently delete "${fn}"?\n\nThis cannot be undone.`)) return;
+          const modelToDelete = btn.dataset.model;
+          if (!confirm(`Permanently delete "${modelToDelete}"?\n\nThis cannot be undone.`)) return;
 
           btn.disabled    = true;
           btn.textContent = "Deleting…";
@@ -385,32 +437,30 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
             const res  = await fetch("/cwk/model", {
               method:  "DELETE",
               headers: { "Content-Type": "application/json" },
-              body:    JSON.stringify({ model: fn }),
+              body:    JSON.stringify({ model: modelToDelete }),
             });
             const data = await res.json();
             if (data.ok) {
-              // Grey out the whole row to show it's gone
               const row = btn.closest("div[style*='background:#1e2335']");
               if (row) {
-                row.style.opacity  = "0.4";
+                row.style.opacity       = "0.4";
                 row.style.pointerEvents = "none";
               }
-              btn.textContent      = "✓ Deleted";
-              btn.style.background = "transparent";
-              btn.style.color      = "#6c7086";
-              btn.style.border     = "1px solid #45475a";
-              onDownloadDone?.(); // refresh the model list in the panel
+              btn.textContent     = "✓ Deleted";
+              btn.style.color     = "#6c7086";
+              btn.style.border    = "1px solid #45475a";
+              onDownloadDone?.("deleted");
             } else {
-              btn.textContent  = "✗ Failed";
-              btn.style.color  = "#f38ba8";
-              btn.title        = data.errors?.join(", ") ?? "Delete failed";
-              btn.disabled     = false;
+              btn.textContent = "✗ Failed";
+              btn.style.color = "#f38ba8";
+              btn.title       = data.errors?.join(", ") ?? "Delete failed";
+              btn.disabled    = false;
             }
           } catch (e) {
-            btn.textContent  = "✗ Failed";
-            btn.style.color  = "#f38ba8";
-            btn.title        = e.message;
-            btn.disabled     = false;
+            btn.textContent = "✗ Failed";
+            btn.style.color = "#f38ba8";
+            btn.title       = e.message;
+            btn.disabled    = false;
           }
         });
       });

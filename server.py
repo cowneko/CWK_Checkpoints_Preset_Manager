@@ -19,11 +19,9 @@ from .nodes import load_presets, save_presets, default_preset
 
 CIVITAI_API_BASE  = "https://civitai.com/api/v1"
 NODE_DIR          = os.path.dirname(__file__)
-# Legacy single-file cache (read-only for migration)
 THUMBNAILS_CACHE  = os.path.join(NODE_DIR, "thumbnails_cache.json")
 HASH_CACHE_FILE   = os.path.join(NODE_DIR, "hash_cache.json")
 LOCAL_THUMBS_DIR  = os.path.join(NODE_DIR, "local_thumbnails")
-# New per-model metadata folder
 MODEL_META_DIR    = os.path.join(NODE_DIR, "model_metadata")
 
 _CONCURRENCY = 5
@@ -70,7 +68,6 @@ def _save_json(path: str, data: dict) -> None:
 # ─── Per-model metadata ───────────────────────────────────────────────────────
 
 def _safe_filename(model_name: str) -> str:
-    """Convert a model name (may contain path separators) to a safe filename."""
     safe = re.sub(r'[<>:"/\\|?*]', '_', model_name)
     return safe + ".json"
 
@@ -80,15 +77,13 @@ def _meta_path(model_name: str) -> str:
 
 
 def _load_meta(model_name: str) -> dict:
-    """Load per-model metadata, falling back to legacy cache then empty dict."""
     path = _meta_path(model_name)
     if os.path.exists(path):
         return _load_json(path)
-    # Migration: check legacy thumbnails_cache.json
     legacy = _load_json(THUMBNAILS_CACHE)
     if model_name in legacy:
         data = legacy[model_name]
-        _save_meta(model_name, data)   # migrate on first access
+        _save_meta(model_name, data)
         return data
     return {}
 
@@ -151,10 +146,24 @@ def _clean_name(filename: str) -> str:
 
 
 def _full_path(model_name: str) -> Optional[str]:
-    return (
+    result = (
         folder_paths.get_full_path("checkpoints",      model_name) or
         folder_paths.get_full_path("diffusion_models", model_name)
     )
+    if result and os.path.exists(result):
+        return result
+
+    basename = os.path.basename(model_name)
+    for folder_type in ("checkpoints", "diffusion_models"):
+        try:
+            roots = folder_paths.get_folder_paths(folder_type)
+        except Exception:
+            continue
+        for root in roots:
+            for dirpath, _, filenames in os.walk(root):
+                if basename in filenames:
+                    return os.path.join(dirpath, basename)
+    return None
 
 
 def _model_save_dir(model_name: str) -> str:
@@ -163,6 +172,15 @@ def _model_save_dir(model_name: str) -> str:
         return os.path.dirname(p)
     dirs = folder_paths.get_folder_paths("checkpoints")
     return dirs[0] if dirs else os.getcwd()
+
+
+def _bust_folder_cache() -> None:
+    """Force ComfyUI to rescan model folders on the next list request."""
+    try:
+        for folder_type in ("checkpoints", "diffusion_models"):
+            folder_paths.filename_list_cache.pop(folder_type, None)
+    except Exception as e:
+        print(f"[CWK] Warning: could not bust folder_paths cache: {e}")
 
 
 # ─── Hash computation ─────────────────────────────────────────────────────────
@@ -190,6 +208,18 @@ async def _get_hash(model_name: str, loop) -> Optional[str]:
         return cached
     print(f"[CWK] Hashing (first time): {model_name}")
     return await loop.run_in_executor(None, _sha256_sync, path)
+
+
+async def _get_hash_by_path(abs_path: str, loop) -> Optional[str]:
+    """Hash by absolute path — used for freshly downloaded files not yet
+    registered in folder_paths."""
+    if not abs_path or not os.path.exists(abs_path):
+        return None
+    cached = _hash_cache_get(abs_path)
+    if cached:
+        return cached
+    print(f"[CWK] Hashing new file: {abs_path}")
+    return await loop.run_in_executor(None, _sha256_sync, abs_path)
 
 
 # ─── CivitAI HTTP helpers ─────────────────────────────────────────────────────
@@ -242,7 +272,6 @@ def _parse_version(data: dict, filename: str) -> dict:
     thumb_img  = min(candidates, key=lambda i: i["nsfwLevel"]) if candidates else None
     nsfw_level = thumb_img["nsfwLevel"] if thumb_img else 0
 
-    # Tags are inside model{} on the by-hash endpoint
     raw_tags = model_blk.get("tags", [])
     tags = [t for t in raw_tags if isinstance(t, str)] if isinstance(raw_tags, list) else []
 
@@ -268,20 +297,25 @@ async def _lookup(model_name: str, session, loop) -> dict:
     return _parse_version(data, model_name)
 
 
+async def _lookup_by_path(abs_path: str, model_name: str, session, loop) -> dict:
+    """Lookup by hashing an absolute path directly — for freshly downloaded files."""
+    file_hash = await _get_hash_by_path(abs_path, loop)
+    if not file_hash:
+        return {"thumbnail": None, "civitai_name": _clean_name(model_name), "nsfw_level": 0, "tags": []}
+    data = await _cget(session, f"{CIVITAI_API_BASE}/model-versions/by-hash/{file_hash}")
+    return _parse_version(data, model_name)
+
+
 def _keep_manual_overrides(new_info: dict, existing: dict) -> dict:
-    """Preserve user overrides (local thumbnail, nsfw_manual, favorite) across refreshes."""
     if existing.get("thumbnail", "").startswith("/cwk/local_thumbnails/"):
         new_info["thumbnail"] = existing["thumbnail"]
     if existing.get("nsfw_manual") is not None:
         new_info["nsfw_manual"] = existing["nsfw_manual"]
-    # Always preserve favorite status across refreshes
     if existing.get("favorite"):
         new_info["favorite"] = True
-    # Preserve non-empty tags
     existing_tags = existing.get("tags")
     if isinstance(existing_tags, list) and existing_tags and not new_info.get("tags"):
         new_info["tags"] = existing_tags
-    # Preserve update_available flag
     if existing.get("update_available"):
         new_info["update_available"] = existing["update_available"]
         new_info["latest_version_id"] = existing.get("latest_version_id")
@@ -361,7 +395,7 @@ async def handle_validate_key(req: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(e)})
 
 
-# ── Favourite ──────────────────────────────────────────────────────────────────
+# ── Favourite ─────────────────────────────────────────���────────────────────────
 
 async def handle_set_favorite(req: web.Request) -> web.Response:
     try:
@@ -397,6 +431,12 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
             "message": "A CivitAI API key is required. Click 🔑 in the browser panel.",
             "done":    True,
         })
+        await resp.write_eof()
+        return resp
+
+    if not names:
+        await _sse(resp, {"done": True, "total": 0})
+        await resp.write_eof()
         return resp
 
     total       = len(names)
@@ -405,55 +445,65 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
     completed   = [0]
     auth_failed = [False]
 
-    async with aiohttp.ClientSession(headers=_headers(api_key)) as session:
+    try:
+        async with aiohttp.ClientSession(headers=_headers(api_key)) as session:
 
-        async def _bounded(name: str):
-            if auth_failed[0]:
-                return
-
-            existing = _load_meta(name)
-
-            # Skip if cached and not forcing/rebuilding
-            if not force and not rebuild and existing.get("thumbnail"):
-                completed[0] += 1
-                await _sse(resp, {
-                    "model": name, "info": existing,
-                    "index": completed[0], "total": total,
-                    "done":  completed[0] == total,
-                })
-                return
-
-            async with sem:
+            async def _bounded(name: str):
                 if auth_failed[0]:
                     return
-                try:
-                    info = await _lookup(name, session, loop)
-                except CivitAIAuthError as e:
-                    auth_failed[0] = True
-                    await _sse(resp, {"error": "api_key_invalid", "message": str(e), "done": True})
+
+                existing = _load_meta(name)
+
+                if not force and not rebuild and existing.get("thumbnail"):
+                    completed[0] += 1
+                    await _sse(resp, {
+                        "model": name, "info": existing,
+                        "index": completed[0], "total": total,
+                        "done":  False,
+                    })
                     return
-                except Exception as e:
-                    print(f"[CWK] Lookup error for {name}: {e}")
-                    info = existing or {
-                        "thumbnail": None,
-                        "civitai_name": _clean_name(name),
-                        "nsfw_level": 0,
-                        "tags": [],
-                    }
 
-            info = _keep_manual_overrides(info, existing)
-            _save_meta(name, info)
-            completed[0] += 1
-            await _sse(resp, {
-                "model": name, "info": info,
-                "index": completed[0], "total": total,
-                "done":  completed[0] == total and not auth_failed[0],
-            })
+                async with sem:
+                    if auth_failed[0]:
+                        return
+                    try:
+                        info = await _lookup(name, session, loop)
+                    except CivitAIAuthError as e:
+                        auth_failed[0] = True
+                        await _sse(resp, {"error": "api_key_invalid", "message": str(e), "done": True})
+                        return
+                    except Exception as e:
+                        print(f"[CWK] Lookup error for {name}: {e}")
+                        info = existing or {
+                            "thumbnail":    None,
+                            "civitai_name": _clean_name(name),
+                            "nsfw_level":   0,
+                            "tags":         [],
+                        }
 
-        await asyncio.gather(*[_bounded(n) for n in names])
+                info = _keep_manual_overrides(info, existing)
+                _save_meta(name, info)
+                completed[0] += 1
+                await _sse(resp, {
+                    "model": name, "info": info,
+                    "index": completed[0], "total": total,
+                    "done":  False,
+                })
 
+            await asyncio.gather(*[_bounded(n) for n in names])
+
+    except Exception as e:
+        print(f"[CWK] SSE fetch outer error: {e}")
+
+    # Always send the terminal done event and close cleanly
     if not auth_failed[0]:
         await _sse(resp, {"done": True, "total": total})
+
+    try:
+        await resp.write_eof()
+    except Exception:
+        pass
+
     return resp
 
 
@@ -480,7 +530,6 @@ async def handle_refresh_all_stream(req: web.Request) -> web.StreamResponse:
 
 
 async def handle_get_cache(req: web.Request) -> web.Response:
-    """Return all per-model metadata as a single dict (for compatibility)."""
     result = {}
     for m in _all_models():
         meta = _load_meta(m["name"])
@@ -490,7 +539,6 @@ async def handle_get_cache(req: web.Request) -> web.Response:
 
 
 async def handle_clear_cache(req: web.Request) -> web.Response:
-    """Delete all per-model metadata files."""
     deleted = 0
     if os.path.isdir(MODEL_META_DIR):
         for fname in os.listdir(MODEL_META_DIR):
@@ -573,9 +621,28 @@ async def handle_list_versions(req: web.Request) -> web.Response:
             data = await _cget(s, f"{CIVITAI_API_BASE}/models/{model_id}")
         if not data:
             return web.json_response({"error": "Model not found on CivitAI."}, status=404)
+
         versions    = sorted(data.get("modelVersions", []),
                              key=lambda v: v.get("createdAt", ""), reverse=True)
         current_vid = entry.get("version_id")
+
+        # ── Fetch per-version details in parallel to get earlyAccessEndsAt ───
+        sem = asyncio.Semaphore(_CONCURRENCY)
+
+        async def _fetch_version_detail(version_id: int) -> dict:
+            async with sem:
+                try:
+                    async with aiohttp.ClientSession(headers=_headers(api_key)) as s:
+                        detail = await _cget(s, f"{CIVITAI_API_BASE}/model-versions/{version_id}")
+                    return detail or {}
+                except Exception as e:
+                    print(f"[CWK] version detail fetch error for {version_id}: {e}")
+                    return {}
+
+        version_ids     = [v.get("id") for v in versions if v.get("id")]
+        version_details = await asyncio.gather(*[_fetch_version_detail(vid) for vid in version_ids])
+        detail_map      = {d.get("id"): d for d in version_details if d.get("id")}
+
         result = []
         for v in versions:
             files = v.get("files", [])
@@ -583,17 +650,22 @@ async def handle_list_versions(req: web.Request) -> web.Response:
                 (f for f in files if f.get("type") == "Model" and f.get("primary")),
                 files[0] if files else {},
             )
+            detail  = detail_map.get(v.get("id"), {})
+            ea_ends = detail.get("earlyAccessEndsAt") or detail.get("earlyAccessDeadline") or None
+
             result.append({
-                "id":           v.get("id"),
-                "name":         v.get("name", ""),
-                "created_at":   v.get("createdAt", ""),
-                "base_model":   v.get("baseModel", ""),
-                "download_url": mfile.get("downloadUrl", ""),
-                "filename":     mfile.get("name", ""),
-                "size_kb":      mfile.get("sizeKB", 0),
-                "is_installed": v.get("id") == current_vid,
-                "images":       v.get("images", [])[:1],
+                "id":                 v.get("id"),
+                "name":               v.get("name", ""),
+                "created_at":         v.get("createdAt", ""),
+                "base_model":         v.get("baseModel", ""),
+                "download_url":       mfile.get("downloadUrl", ""),
+                "filename":           mfile.get("name", ""),
+                "size_kb":            mfile.get("sizeKB", 0),
+                "is_installed":       v.get("id") == current_vid,
+                "images":             v.get("images", [])[:1],
+                "early_access_ends":  ea_ends,
             })
+
         return web.json_response({"model_name": name, "versions": result})
     except CivitAIAuthError as e:
         return web.json_response({"error": str(e)}, status=403)
@@ -618,7 +690,6 @@ async def handle_model_description(req: web.Request) -> web.Response:
         if not data:
             return web.json_response({"error": "Model not found on CivitAI."}, status=404)
         description = data.get("description") or ""
-        # On /models/{id}, tags are at the top level
         raw_tags = data.get("tags", [])
         tags = [t for t in raw_tags if isinstance(t, str)] if isinstance(raw_tags, list) else []
         if tags:
@@ -632,15 +703,6 @@ async def handle_model_description(req: web.Request) -> web.Response:
 
 
 async def handle_check_updates(req: web.Request) -> web.Response:
-    """
-    POST /cwk/civitai/check-updates
-    Body: { "api_key": "..." }
-
-    For every model that has a cached version_id and model_id, check whether
-    a newer version exists on CivitAI. Updates per-model metadata with
-    update_available and latest_version_id fields.
-    Returns a summary list.
-    """
     try:
         body = await req.json()
     except Exception:
@@ -652,7 +714,6 @@ async def handle_check_updates(req: web.Request) -> web.Response:
     models   = _all_models()
     results  = []
     sem      = asyncio.Semaphore(_CONCURRENCY)
-    loop     = asyncio.get_event_loop()
 
     async def _check_one(m):
         meta       = _load_meta(m["name"])
@@ -660,7 +721,6 @@ async def handle_check_updates(req: web.Request) -> web.Response:
         current_id = meta.get("version_id")
         if not model_id or not current_id:
             return
-
         async with sem:
             try:
                 async with aiohttp.ClientSession(headers=_headers(api_key)) as s:
@@ -703,6 +763,7 @@ async def handle_delete_model(req: web.Request) -> web.Response:
     if full and os.path.exists(full):
         try:
             os.remove(full)
+            _bust_folder_cache()
         except OSError as e:
             errors.append(str(e))
     _delete_meta(name)
@@ -734,12 +795,142 @@ async def handle_refresh_civitai(req: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(e)}, status=403)
     except Exception as e:
         return web.json_response({"ok": False, "error": str(e)}, status=500)
-        
+
+
 async def handle_get_meta(req: web.Request) -> web.Response:
     name = req.rel_url.query.get("model", "")
     if not name:
         return web.json_response({}, status=400)
     return web.json_response(_load_meta(name))
+
+
+# ─── Download handler (SSE progress stream) ───────────────────────────────────
+
+async def handle_download_version(req: web.Request) -> web.StreamResponse:
+    try:
+        body = await req.json()
+    except Exception:
+        return web.Response(status=400, text="invalid JSON")
+
+    model_name   = body.get("model",        "")
+    download_url = body.get("download_url", "")
+    filename     = body.get("filename",     "")
+    api_key      = body.get("api_key",      "")
+
+    if not download_url or not filename:
+        return web.Response(status=400, text="download_url and filename required")
+
+    save_dir  = _model_save_dir(model_name)
+    save_path = os.path.join(save_dir, filename)
+
+    resp = web.StreamResponse(headers={
+        "Content-Type":      "text/event-stream",
+        "Cache-Control":     "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+    await resp.prepare(req)
+
+    try:
+        dl_headers = _headers(api_key)
+        url = download_url
+        if api_key and "token=" not in url:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}token={api_key}"
+
+        async with aiohttp.ClientSession(headers=dl_headers, timeout=_DL_TIMEOUT) as session:
+            async with session.get(url) as r:
+                if r.status == 401 or r.status == 403:
+                    reason = "check your API key."
+                    try:
+                        err_data = await r.json(content_type=None)
+                        err_msg  = err_data.get("message") or err_data.get("error") or ""
+                        if err_msg:
+                            reason = err_msg
+                        elif r.status == 401:
+                            reason = "This model requires early access — you need to purchase access on CivitAI before downloading."
+                    except Exception:
+                        if r.status == 401:
+                            reason = "This model requires early access — you need to purchase access on CivitAI before downloading."
+                    await _sse(resp, {"error": f"⚠ Download not available: {reason}"})
+                    await resp.write_eof()
+                    return resp
+
+                if not r.ok:
+                    await _sse(resp, {"error": f"CivitAI returned HTTP {r.status}"})
+                    await resp.write_eof()
+                    return resp
+
+                total_bytes    = int(r.headers.get("Content-Length", 0))
+                received_bytes = 0
+                last_progress  = -1
+
+                os.makedirs(save_dir, exist_ok=True)
+                with open(save_path, "wb") as f:
+                    async for chunk in r.content.iter_chunked(1024 * 256):
+                        f.write(chunk)
+                        received_bytes += len(chunk)
+                        if total_bytes > 0:
+                            progress = int(received_bytes / total_bytes * 100)
+                            if progress != last_progress:
+                                last_progress = progress
+                                await _sse(resp, {"progress": progress})
+
+        print(f"[CWK] Downloaded: {filename} → {save_path}")
+
+        # ── Bust folder cache so the new file is visible immediately ──────────
+        _bust_folder_cache()
+
+        # ── Fetch CivitAI metadata right now using the absolute path ──────────
+        # (folder_paths may not have rescanned yet — hash by abs path directly)
+        loop = asyncio.get_event_loop()
+        try:
+            async with aiohttp.ClientSession(headers=_headers(api_key)) as session:
+                info = await _lookup_by_path(save_path, filename, session, loop)
+            if info.get("thumbnail"):
+                # Derive the registered model name (subfolder/filename.ext)
+                # by finding which folder_paths root contains save_dir
+                registered_name = filename
+                for folder_type in ("checkpoints", "diffusion_models"):
+                    try:
+                        roots = folder_paths.get_folder_paths(folder_type)
+                    except Exception:
+                        continue
+                    for root in roots:
+                        root_norm = os.path.normpath(root)
+                        dir_norm  = os.path.normpath(save_dir)
+                        if dir_norm.startswith(root_norm):
+                            rel = os.path.relpath(save_path, root_norm)
+                            registered_name = rel
+                            break
+                _save_meta(registered_name, info)
+                await _sse(resp, {"progress": 100, "done": True, "civitai": info, "registered_name": registered_name})
+            else:
+                await _sse(resp, {"progress": 100, "done": True})
+        except Exception as e:
+            print(f"[CWK] Post-download metadata fetch error: {e}")
+            await _sse(resp, {"progress": 100, "done": True})
+
+    except asyncio.CancelledError:
+        if os.path.exists(save_path):
+            try:
+                os.remove(save_path)
+            except OSError:
+                pass
+    except Exception as e:
+        print(f"[CWK] Download error: {e}")
+        if os.path.exists(save_path):
+            try:
+                os.remove(save_path)
+            except OSError:
+                pass
+        await _sse(resp, {"error": str(e)})
+
+    try:
+        await resp.write_eof()
+    except Exception:
+        pass
+
+    return resp
 
 
 # ─── Route registration ───────────────────────────────────────────────────────
@@ -762,6 +953,7 @@ def register_routes(app: web.Application) -> None:
     r.add_get   ("/cwk/civitai/versions",             handle_list_versions)
     r.add_get   ("/cwk/civitai/model-description",    handle_model_description)
     r.add_post  ("/cwk/civitai/check-updates",        handle_check_updates)
+    r.add_post  ("/cwk/civitai/download",             handle_download_version)
     r.add_post  ("/cwk/model/favorite",               handle_set_favorite)
     r.add_delete("/cwk/model",                        handle_delete_model)
     r.add_post  ("/cwk/civitai/refresh",              handle_refresh_civitai)
