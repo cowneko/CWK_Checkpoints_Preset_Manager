@@ -1,0 +1,12 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Model metadata cache
+model_metadata/
+
+# Hash cache
+hash_cache.json
+
+# Local thumbnails (user-specific)
+local_thumbnails/
