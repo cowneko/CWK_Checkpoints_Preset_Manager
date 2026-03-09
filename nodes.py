@@ -4,7 +4,7 @@ CWK Checkpoints Preset Manager — ComfyUI node definitions.
 Single node: CWK_ModelPresetManager
   - Loads a checkpoint or diffusion model
   - Merges stored preset with optional per-execution overrides
-  - Outputs: MODEL, CLIP, VAE, sampler_name, scheduler, cfg, steps, width, height
+  - Outputs: MODEL, CLIP, VAE, steps, cfg, sampler_name, scheduler, width, height
   - Applies clip_skip and rng internally
   - Supports external CLIP and VAE override (or embedded from checkpoint)
 """
@@ -220,14 +220,16 @@ class CWK_ModelPresetManager:
 
     RETURN_TYPES = (
         "MODEL", "CLIP", "VAE",
+        "INT", "FLOAT",
         comfy.samplers.KSampler.SAMPLERS,
         comfy.samplers.KSampler.SCHEDULERS,
-        "FLOAT", "INT", "INT", "INT",
+        "INT", "INT",
     )
     RETURN_NAMES = (
         "MODEL", "CLIP", "VAE",
+        "steps", "cfg",
         "sampler_name", "scheduler",
-        "cfg", "steps", "width", "height",
+        "width", "height",
     )
     FUNCTION    = "execute"
     CATEGORY    = "CWK/presets"
@@ -274,7 +276,7 @@ class CWK_ModelPresetManager:
         clip_name    = override_clip_name      if override_clip_name  != "(preset)" else p.get("clip_name", "embedded")
         vae_name     = override_vae_name       if override_vae_name   != "(preset)" else p.get("vae_name",  "embedded")
 
-        # ── Load external CLIP if not embedded ────────────────────��───────────
+        # ── Load external CLIP if not embedded ────────────────────────────────
         if clip_name and clip_name != "embedded":
             try:
                 clip = _load_external_clip(clip_name)
@@ -299,7 +301,7 @@ class CWK_ModelPresetManager:
         except Exception as e:
             print(f"[CWK] Warning: could not apply clip_skip={clip_skip}: {e}")
 
-        # ── Apply RNG ─────────────────────────────────────────────────────────
+        # ── Apply RNG ──────────────────────────────────────────���──────────────
         model = _apply_rng(model, rng)
 
         print(
@@ -310,7 +312,7 @@ class CWK_ModelPresetManager:
             f"clip={clip_name} vae={vae_name}"
         )
 
-        return (model, clip, vae, sampler_name, scheduler, cfg, steps, width, height)
+        return (model, clip, vae, steps, cfg, sampler_name, scheduler, width, height)
 
 
 # ─── Node mappings ────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ const NODE_TYPE = "CWK_ModelPresetManager";
 
 const PAD         = 10;
 const THUMB_W     = 120;
-const THUMB_H     = 160;
+const THUMB_H     = 180;
 const ROW_H       = 26;
 const LABEL_W     = 90;
 const BTN_H       = 26;
@@ -24,8 +24,8 @@ const ARROW_W     = 20;
 
 const TITLE_H   = () => LiteGraph.NODE_TITLE_HEIGHT ?? 30;
 const SLOT_H    = () => LiteGraph.NODE_SLOT_HEIGHT  ?? 20;
-// Number of output slots: MODEL, CLIP, VAE, sampler_name, scheduler,
-// cfg, steps, width, height
+// Number of output slots: MODEL, CLIP, VAE, steps, cfg,
+// sampler_name, scheduler, width, height
 const N_OUTPUTS = 9;
 
 function getSlotsBottom() {
@@ -34,7 +34,6 @@ function getSlotsBottom() {
 
 // ─── Row descriptors ──────────────────────────────────────────────────────────
 
-// Start with sensible fallbacks — overwritten async once object_info loads
 let SAMPLERS   = ["euler","euler_ancestral","dpmpp_2m","dpmpp_2m_sde",
                   "dpmpp_sde","dpmpp_3m_sde","ddim","uni_pc","lcm"];
 let SCHEDULERS = ["normal","karras","exponential","sgm_uniform","simple","beta"];
@@ -42,7 +41,6 @@ const RNGS     = ["cpu","gpu"];
 let CLIPS      = ["embedded"];
 let VAES       = ["embedded"];
 
-// Fetch the real lists from ComfyUI and patch INFO_ROWS in place
 async function _loadSamplerOptions() {
   try {
     const res = await fetch("/object_info/CWK_ModelPresetManager");
@@ -54,7 +52,6 @@ async function _loadSamplerOptions() {
     if (samplers.length)   { SAMPLERS   = samplers;   INFO_ROWS[0].options = samplers;   }
     if (schedulers.length) { SCHEDULERS = schedulers; INFO_ROWS[1].options = schedulers; }
 
-    // CLIP and VAE lists from override widgets
     const clips = (inputs?.optional?.override_clip_name?.[0] ?? []).filter(v => v !== "(preset)");
     const vaes  = (inputs?.optional?.override_vae_name?.[0]  ?? []).filter(v => v !== "(preset)");
     if (clips.length) { CLIPS = clips; INFO_ROWS[8].options = clips; }
@@ -64,7 +61,6 @@ async function _loadSamplerOptions() {
   }
 }
 
-// Also fetch from dedicated endpoints as fallback
 async function _loadClipVaeOptions() {
   try {
     const [clipRes, vaeRes] = await Promise.all([
@@ -97,8 +93,6 @@ const INFO_ROWS = [
   { key: "vae_name",     label: "VAE",       widget: "override_vae_name",  type: "list",  options: VAES       },
 ];
 
-// Kick off the fetch immediately — by the time the user clicks a dropdown
-// it will have resolved. INFO_ROWS options are updated in place.
 _loadSamplerOptions();
 _loadClipVaeOptions();
 
@@ -143,13 +137,29 @@ function loadImage(url) {
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
 function getThumbRect(node) {
-  return { x: PAD, y: TITLE_H() + PAD, w: THUMB_W, h: THUMB_H };
+  // The region between the title bar bottom and the divider line is
+  // determined by whichever is taller: the thumbnail or the output slots.
+  // We want equal padding above and below the thumbnail within that region.
+  const regionTop    = TITLE_H();
+  const regionBottom = getSlotsBottom();
+  const regionH      = regionBottom - regionTop;
+
+  // If the thumbnail fits inside the slot region, centre it.
+  // Otherwise it drives the region height and gets minimal padding.
+  if (THUMB_H <= regionH - PAD * 2) {
+    const thumbY = regionTop + (regionH - THUMB_H) / 2;
+    return { x: PAD, y: thumbY, w: THUMB_W, h: THUMB_H };
+  }
+  // Thumbnail is taller than slots — just use equal padding
+  return { x: PAD, y: regionTop + PAD, w: THUMB_W, h: THUMB_H };
 }
+
 function getInfoAreaX()     { return PAD + THUMB_W + PAD; }
 function getInfoAreaW(node) { return node.size[0] - getInfoAreaX() - PAD; }
 
 function getRowsStartY(node) {
-  const thumbBottom = TITLE_H() + PAD + THUMB_H + PAD;
+  const thumbRect   = getThumbRect(node);
+  const thumbBottom = thumbRect.y + thumbRect.h + PAD;
   const slotsBottom = getSlotsBottom() + PAD;
   return Math.max(thumbBottom, slotsBottom);
 }
@@ -544,7 +554,6 @@ function drawNode(node, ctx) {
       ctx.fillText("▾", vr.x + vr.w - 5, ry + ROW_H/2);
       ctx.fillStyle = C.text; ctx.font = "11px Inter,system-ui,sans-serif";
       ctx.textAlign = "left";
-      // For long filenames (CLIP/VAE), truncate with ellipsis
       const displayVal = String(val);
       ctx.fillText(displayVal, vr.x + 6, ry + ROW_H/2, vr.w - 18);
     } else {
@@ -614,9 +623,7 @@ app.registerExtension({
         this.size[1] = calcNodeHeight(this);
       };
 
-      // ── Mouse down — everything fires here, reliably ───────────────────────
       node.onMouseDown = function (e, pos) {
-        // Buttons
         const btnKey = hitTestButton(this, pos[0], pos[1]);
         if (btnKey) {
           handleButtonClick(node, btnKey);
@@ -630,13 +637,11 @@ app.registerExtension({
         const row = INFO_ROWS[rowIdx];
         const cur = node._cwkPreset?.[row.key];
 
-        // Dropdown list
         if (row.type === "list") {
           openDropdown(node, rowIdx, cur, val => applyRowValue(node, rowIdx, val));
           return true;
         }
 
-        // Arrow steps
         if (part === "left") {
           const step = row.type === "float" ? 0.1 : 1;
           applyRowValue(node, rowIdx, clampValue(row, Number(cur) - step));
@@ -648,7 +653,6 @@ app.registerExtension({
           return true;
         }
 
-        // Center value — open modal near the click position
         if (part === "center") {
           openNumberModal(row, cur, e.clientX, e.clientY, val => applyRowValue(node, rowIdx, val));
           return true;
@@ -657,7 +661,6 @@ app.registerExtension({
         return false;
       };
 
-      // ── Mouse move → hover ─────────────────────────────────────────────────
       node.onMouseMove = function (e, pos) {
         const btnKey = hitTestButton(this, pos[0], pos[1]);
         if (btnKey) {
@@ -798,7 +801,7 @@ function handleButtonClick(node, key) {
   }
 }
 
-// ─── Singleton panel + apiFetch ───────────────────────────────────────────────
+// ─── Singleton panel + apiFetch ─────────────��─────────────────────────────────
 
 let _panel = null;
 function getPanel() {
