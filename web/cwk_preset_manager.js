@@ -6,7 +6,7 @@ import { app }               from "../../scripts/app.js";
 import { injectStyles }      from "./cwk_styles.js";
 import { ModelBrowserPanel } from "./cwk_panel.js";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────���──────────────
 
 const NODE_TYPE = "CWK_ModelPresetManager";
 
@@ -24,8 +24,6 @@ const ARROW_W     = 20;
 
 const TITLE_H   = () => LiteGraph.NODE_TITLE_HEIGHT ?? 30;
 const SLOT_H    = () => LiteGraph.NODE_SLOT_HEIGHT  ?? 20;
-// Number of output slots: MODEL, CLIP, VAE, steps, cfg,
-// sampler_name, scheduler, width, height
 const N_OUTPUTS = 9;
 
 function getSlotsBottom() {
@@ -115,6 +113,10 @@ const C = {
   flashGreen: "#a6e3a1",
 };
 
+// ─── Node default colors ──────────────────────────────────────────────────────
+const NODE_COLOR   = "#141824";   // body background
+const NODE_BGCOLOR = "#1e2335";   // title bar background
+
 const BTN_COLORS = {
   load:   { border: "#313552", hoverBorder: "#89b4fa", hoverText: "#89b4fa" },
   reset:  { border: "#313552", hoverBorder: "#89b4fa", hoverText: "#89b4fa" },
@@ -137,20 +139,14 @@ function loadImage(url) {
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
 function getThumbRect(node) {
-  // The region between the title bar bottom and the divider line is
-  // determined by whichever is taller: the thumbnail or the output slots.
-  // We want equal padding above and below the thumbnail within that region.
   const regionTop    = TITLE_H();
   const regionBottom = getSlotsBottom();
   const regionH      = regionBottom - regionTop;
 
-  // If the thumbnail fits inside the slot region, centre it.
-  // Otherwise it drives the region height and gets minimal padding.
   if (THUMB_H <= regionH - PAD * 2) {
     const thumbY = regionTop + (regionH - THUMB_H) / 2;
     return { x: PAD, y: thumbY, w: THUMB_W, h: THUMB_H };
   }
-  // Thumbnail is taller than slots — just use equal padding
   return { x: PAD, y: regionTop + PAD, w: THUMB_W, h: THUMB_H };
 }
 
@@ -606,6 +602,10 @@ app.registerExtension({
       node._cwkPreset     = {};
       node._cwkModelName  = null;
 
+      // ── Set custom node colors ─────────────────────────────────────────────
+      node.color   = NODE_COLOR;    // body
+      node.bgcolor = NODE_BGCOLOR;  // title bar
+
       setTimeout(() => {
         for (const w of node.widgets ?? []) {
           w.type = "hidden"; w.hidden = true;
@@ -801,7 +801,7 @@ function handleButtonClick(node, key) {
   }
 }
 
-// ─── Singleton panel + apiFetch ─────────────��─────────────────────────────────
+// ─── Singleton panel + apiFetch ───────────────────────────────────────────────
 
 let _panel = null;
 function getPanel() {
