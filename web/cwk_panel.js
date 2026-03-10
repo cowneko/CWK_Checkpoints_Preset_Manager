@@ -197,6 +197,7 @@ export class ModelBrowserPanel {
               <select class="cwk-sidebar-input" id="sb-rng" disabled>
                 <option value="cpu">cpu</option>
                 <option value="gpu">gpu</option>
+				<option value="nv">nv</option>
               </select>
             </div>
           </div>

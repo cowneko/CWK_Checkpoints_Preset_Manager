@@ -35,7 +35,7 @@ function getSlotsBottom() {
 let SAMPLERS   = ["euler","euler_ancestral","dpmpp_2m","dpmpp_2m_sde",
                   "dpmpp_sde","dpmpp_3m_sde","ddim","uni_pc","lcm"];
 let SCHEDULERS = ["normal","karras","exponential","sgm_uniform","simple","beta"];
-const RNGS     = ["cpu","gpu"];
+const RNGS     = ["cpu","gpu", "nv"];
 let CLIPS      = ["embedded"];
 let VAES       = ["embedded"];
 

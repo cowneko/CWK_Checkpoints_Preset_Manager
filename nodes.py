@@ -83,73 +83,35 @@ def save_presets(presets: Dict[str, Any]) -> None:
 
 def _apply_rng(model, rng: str):
     """
-    Apply cpu/gpu RNG selection to the model.
+    Apply cpu/gpu/nv RNG selection to the model.
 
-    Strategy 1: smZNodes installed → store smZ_opts in model_options.
-    Strategy 2: fallback → patch comfy.sample.prepare_noise directly.
+    Uses the self-contained CWK RNG subsystem (cwk_rng_shared / cwk_rng_philox
+    / cwk_rng) which is compatible with smZNodes' smZ_opts protocol.
+    If smZNodes is also installed, it will see the same key and work
+    transparently.
+
+    This patches comfy.sample.prepare_noise with our own implementation that:
+      - Supports cpu / gpu / nv (NVidia Philox) noise sources
+      - Hijacks k-diffusion's default_noise_sampler for consistent batch noise
+      - Reads options from model_options['smZ_opts'] via stack introspection
     """
+    from . import cwk_rng_shared, cwk_rng
+
     model = model.clone()
     model.model_options = dict(model.model_options)
 
-    # ── Strategy 1: smZNodes present ──────────────────────────────────────────
-    for import_path in (
-        "comfy_extras.nodes_smZNodes.modules",
-        "ComfyUI_smZNodes.modules",
-    ):
-        try:
-            import importlib
-            smz_shared = importlib.import_module(f"{import_path}.shared")
-            opts = smz_shared.opts.clone()
-            opts.randn_source = rng
-            model.model_options[smz_shared.Options.KEY] = opts
-            print(f"[CWK] RNG set via smZNodes: randn_source={rng}")
-            return model
-        except ImportError:
-            continue
+    # Store RNG options in model_options using the smZ_opts protocol
+    opts = cwk_rng_shared.opts_default.clone()
+    opts.randn_source = rng
+    model.model_options[cwk_rng_shared.Options.KEY] = opts
 
-    # ── Strategy 2: patch comfy.sample.prepare_noise directly ─────────────────
-    try:
-        import torch
-        import comfy.sample
+    # Patch comfy.sample.prepare_noise with our self-contained implementation
+    import comfy.sample
+    if not hasattr(comfy.sample, '_cwk_original_prepare_noise'):
+        comfy.sample._cwk_original_prepare_noise = comfy.sample.prepare_noise
+    comfy.sample.prepare_noise = cwk_rng.prepare_noise
 
-        rng_device = "cpu" if rng == "cpu" else None
-
-        original_prepare_noise = comfy.sample.prepare_noise
-
-        def _cwk_prepare_noise(latent_image, seed, noise_inds=None):
-            import comfy.model_management
-            device = torch.device("cpu") if rng_device == "cpu" \
-                     else comfy.model_management.get_torch_device()
-            generator = torch.Generator(device=device).manual_seed(int(seed))
-            if noise_inds is None:
-                return torch.randn(
-                    latent_image.size(),
-                    dtype=latent_image.dtype,
-                    layout=latent_image.layout,
-                    device=device,
-                    generator=generator,
-                ).to(latent_image.device)
-            unique_inds, inverse = torch.unique(
-                torch.tensor(noise_inds), return_inverse=True
-            )
-            noises = []
-            for i in range(int(unique_inds[-1]) + 1):
-                shape = [1] + list(latent_image.size())[1:]
-                noise = torch.randn(shape, dtype=latent_image.dtype,
-                                    layout=latent_image.layout,
-                                    device=device, generator=generator)
-                if i in unique_inds.tolist():
-                    noises.append(noise.to(latent_image.device))
-            return torch.cat([noises[i] for i in inverse.tolist()], dim=0)
-
-        comfy.sample.prepare_noise = _cwk_prepare_noise
-        model.model_options["_cwk_rng_patched"] = True
-        model.model_options["_cwk_rng_original"] = original_prepare_noise
-        print(f"[CWK] RNG set via direct patch: device={rng}")
-
-    except Exception as e:
-        print(f"[CWK] Warning: could not apply rng={rng}: {e}")
-
+    print(f"[CWK] RNG set: randn_source={rng}")
     return model
 
 
@@ -212,9 +174,9 @@ class CWK_ModelPresetManager:
                 "override_clip_skip": ("INT",   {"default": 0,   "min": -24,  "max": 0,    "step": 1}),
                 "override_width":     ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
                 "override_height":    ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
-                "override_rng":       (["(preset)", "cpu", "gpu"],),
-                "override_clip_name": (["(preset)"] + clip_list,),
+                "override_rng":       (["(preset)", "cpu", "gpu", "nv"],),
                 "override_vae_name":  (["(preset)"] + vae_list,),
+                "override_clip_name": (["(preset)"] + clip_list,),
             },
         }
 
@@ -301,7 +263,7 @@ class CWK_ModelPresetManager:
         except Exception as e:
             print(f"[CWK] Warning: could not apply clip_skip={clip_skip}: {e}")
 
-        # ── Apply RNG ──────────────────────────────────────────���──────────────
+        # ── Apply RNG ─────────────────────────────────────────────────────────
         model = _apply_rng(model, rng)
 
         print(

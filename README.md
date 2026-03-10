@@ -20,9 +20,11 @@ A [ComfyUI](https://github.com/comfyanonymous/ComfyUI) custom node that combines
 - Preset fields: **Sampler**, **Scheduler**, **CFG**, **Steps**, **Clip Skip**, **Width**, **Height**, **RNG**, **CLIP**, **VAE**
 - Presets stored in `checkpoint_presets.json` and merged with per-execution widget overrides at runtime
 - **Clip skip** applied directly to the CLIP model via `clip.clip_layer()` — no extra node needed
-- **RNG control** — choose between **CPU** or **GPU** noise generation per model:
-  - Uses [smZNodes](https://github.com/shiimizu/ComfyUI_smZNodes) `smZ_opts` if installed (recommended for accurate reproducibility)
-  - Falls back to patching `comfy.sample.prepare_noise` directly when smZNodes is not available
+- **RNG control** — choose between **CPU**, **GPU**, or **NV** (NVidia Philox) noise generation per model:
+  - Self-contained RNG implementation adapted from [ComfyUI_smZNodes](https://github.com/shiimizu/ComfyUI_smZNodes) by shiimizu — **no external dependency required**
+  - Uses the `smZ_opts` model_options protocol for full compatibility — if smZNodes is also installed, the two coexist transparently
+  - Includes vendored Philox 4×32 RNG for NVidia-compatible cross-GPU reproducibility
+  - Patches `comfy.sample.prepare_noise` and hijacks k-diffusion's `default_noise_sampler` for consistent noise in all samplers
 - **External CLIP & VAE** — select `embedded` (uses the checkpoint's built-in CLIP/VAE) or pick any external CLIP or VAE model file from ComfyUI's `clip`/`vae` folders; the selection is saved as part of the preset so each model can have its own preferred CLIP and VAE
 
 ### 📂 Model Browser & Manager
@@ -82,7 +84,8 @@ Then restart ComfyUI.
 
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
 - A [CivitAI API key](https://civitai.com/user/account) (required for fetching thumbnails, model info, and downloading)
-- [smZNodes](https://github.com/shiimizu/ComfyUI_smZNodes) *(optional — enables proper CPU/GPU RNG switching)*
+
+> **Note:** [smZNodes](https://github.com/shiimizu/ComfyUI_smZNodes) is **no longer required**. As of v1.2.0, the RNG subsystem is fully self-contained using code adapted from smZNodes. If smZNodes is installed alongside, the two coexist transparently with no conflicts.
 
 ---
 
@@ -103,10 +106,16 @@ Click **💾 Update Preset** to save the current values as the preset for the lo
 ### 5. Reset to preset
 Click **↩ Reset** to restore all values to the saved preset for the current model, discarding any unsaved changes.
 
-### 6. External CLIP / VAE
+### 6. RNG modes
+Use the **RNG** dropdown to select the noise generation source:
+- **cpu** — generate noise on CPU (default, deterministic across all GPUs)
+- **gpu** — generate noise on the active GPU (faster, but results may vary across different GPU models)
+- **nv** — NVidia Philox RNG (produces identical noise to `torch.randn(..., device='cuda')` but runs on CPU — enables cross-GPU reproducibility matching NVidia's CUDA RNG)
+
+### 7. External CLIP / VAE
 Use the **CLIP** and **VAE** dropdowns on the node or in the Model Browser sidebar to select an external model file, or leave as `embedded` to use the checkpoint's built-in CLIP/VAE. If an external file fails to load, the node falls back to the embedded version with a console warning.
 
-### 7. Manage your models
+### 8. Manage your models
 Use the Model Browser to organize your collection:
 - **⭐ Star** your favorite models and toggle the favorites filter
 - **Right-click** any card for options: view model info, pick or set thumbnails, check for updates, refresh CivitAI data, or delete the model
@@ -162,12 +171,28 @@ The node registers the following REST routes on the ComfyUI server:
 
 ---
 
+## RNG Implementation
+
+The RNG subsystem is self-contained and adapted from [ComfyUI_smZNodes](https://github.com/shiimizu/ComfyUI_smZNodes) by [shiimizu](https://github.com/shiimizu). It provides accurate CPU, GPU, and NVidia Philox noise generation without requiring smZNodes to be installed.
+
+The implementation consists of three internal modules:
+- **`cwk_rng_shared.py`** — `Options` class using the `smZ_opts` protocol key, with all fields smZNodes expects for full interoperability
+- **`cwk_rng_philox.py`** — Philox 4×32 random number generator that reproduces NVidia CUDA `torch.randn` output on CPU
+- **`cwk_rng.py`** — `prepare_noise()` function that replaces `comfy.sample.prepare_noise`, with stack introspection to read per-model RNG settings, `TorchHijack` for batch-consistent noise, and k-diffusion `default_noise_sampler` hijacking
+
+If smZNodes is also installed, the two systems coexist transparently — CWK stores its options under the same `smZ_opts` key with all expected fields populated, so smZNodes can read them without errors.
+
+---
+
 ## File Structure
 
 ```
 CWK_Checkpoints_Preset_Manager/
 ├── __init__.py                 # ComfyUI entry point — registers nodes and routes
 ├── nodes.py                    # Node definition, preset helpers, CLIP/VAE/RNG loaders
+├── cwk_rng_shared.py           # Self-contained RNG options (smZ_opts protocol)
+├── cwk_rng_philox.py           # Vendored Philox 4×32 NVidia-compatible RNG
+├── cwk_rng.py                  # prepare_noise, TorchHijack, k-diffusion hijacking
 ├── server.py                   # Aiohttp REST/SSE routes and CivitAI integration
 ├── checkpoint_presets.json     # Per-model presets (auto-generated, not tracked)
 ├── hash_cache.json             # SHA-256 hash cache for model files (auto-generated)
@@ -183,6 +208,12 @@ CWK_Checkpoints_Preset_Manager/
 ├── LICENSE.txt
 └── README.md
 ```
+
+---
+
+## Credits
+
+The RNG subsystem (`cwk_rng.py`, `cwk_rng_philox.py`, `cwk_rng_shared.py`) is adapted from [ComfyUI_smZNodes](https://github.com/shiimizu/ComfyUI_smZNodes) by [shiimizu](https://github.com/shiimizu), licensed under AGPL-3.0. These modules have been vendored and adapted to work as a self-contained integration within this node.
 
 ---
 

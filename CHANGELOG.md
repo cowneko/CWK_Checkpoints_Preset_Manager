@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.0] — 2026-03-10
+
+### Changed
+
+#### Self-contained RNG subsystem
+- **RNG no longer depends on smZNodes** — the node now ships its own self-contained RNG implementation, adapted from [ComfyUI_smZNodes](https://github.com/shiimizu/ComfyUI_smZNodes) by shiimizu
+- Added three new internal modules:
+  - `cwk_rng_shared.py` — self-contained `Options` class using the `smZ_opts` protocol, with all fields smZNodes expects (ensures seamless coexistence if smZNodes is also installed)
+  - `cwk_rng_philox.py` — vendored Philox 4×32 NVidia-compatible CPU RNG generator (from smZNodes' `rng_philox.py`)
+  - `cwk_rng.py` — full `prepare_noise()` replacement with stack introspection, `TorchHijack`, and k-diffusion `default_noise_sampler` hijacking (adapted from smZNodes' `rng.py`)
+- `_apply_rng()` in `nodes.py` simplified: removed the two-strategy approach (try smZNodes → fallback patch); now always uses the self-contained subsystem
+- The RNG integration uses the same `smZ_opts` model_options key, so if smZNodes is installed alongside, the two coexist transparently with no conflicts
+
+#### New RNG mode
+- Added **nv** (NVidia Philox) as a third RNG option alongside `cpu` and `gpu` — produces identical noise to `torch.randn(..., device='cuda')` but runs on CPU, enabling cross-GPU reproducibility
+- `override_rng` input now accepts `cpu`, `gpu`, or `nv`
+- Frontend updated: RNG dropdowns on the canvas node and in the Model Browser sidebar now include the `nv` option
+
+---
+
 ## [1.1.0] — 2026-03-09
 
 ### Added
