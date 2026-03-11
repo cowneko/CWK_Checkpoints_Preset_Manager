@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.3.0] — 2026-03-11
+
+### Changed
+
+#### Fix error when trying to load Diffusion models (Flux/Qwen/Chroma/Z-image...)
+- The node now check for model type first then uses either CheckpointLoaderSimple.load_checkpoint() for checkpoints models or comfy.sd.load_diffusion_model() for diffusion models
+
+---
+
 ## [1.2.0] — 2026-03-10
 
 ### Changed
