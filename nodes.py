@@ -212,16 +212,23 @@ class CWK_ModelPresetManager:
         override_vae_name:  str   = "(preset)",
     ) -> Tuple:
         # ── Load the checkpoint / diffusion model ─────────────────────────────
-        from nodes import CheckpointLoaderSimple
-        ckpt_path = (
-            folder_paths.get_full_path("checkpoints",      model_name) or
-            folder_paths.get_full_path("diffusion_models", model_name)
-        )
-        if not ckpt_path:
+        is_checkpoint = folder_paths.get_full_path("checkpoints", model_name) is not None
+        is_diffusion  = (not is_checkpoint
+                         and folder_paths.get_full_path("diffusion_models", model_name) is not None)
+
+        if not is_checkpoint and not is_diffusion:
             raise FileNotFoundError(f"[CWK] Model file not found: {model_name}")
 
-        loader           = CheckpointLoaderSimple()
-        model, clip, vae = loader.load_checkpoint(model_name)
+        if is_checkpoint:
+            from nodes import CheckpointLoaderSimple
+            loader           = CheckpointLoaderSimple()
+            model, clip, vae = loader.load_checkpoint(model_name)
+        else:
+            # Diffusion models (e.g. Flux, Wan, etc.) — no embedded CLIP/VAE
+            diff_path = folder_paths.get_full_path("diffusion_models", model_name)
+            model = comfy.sd.load_diffusion_model(diff_path)
+            clip = None
+            vae  = None
 
         # ── Merge preset + overrides ──────────────────────────────────────────
         presets = load_presets()
@@ -238,30 +245,41 @@ class CWK_ModelPresetManager:
         clip_name    = override_clip_name      if override_clip_name  != "(preset)" else p.get("clip_name", "embedded")
         vae_name     = override_vae_name       if override_vae_name   != "(preset)" else p.get("vae_name",  "embedded")
 
-        # ── Load external CLIP if not embedded ────────────────────────────────
+        # ── Load external CLIP if needed ──────────────────────────────────────
         if clip_name and clip_name != "embedded":
             try:
                 clip = _load_external_clip(clip_name)
                 print(f"[CWK] External CLIP loaded: {clip_name}")
             except Exception as e:
                 print(f"[CWK] Warning: could not load external CLIP '{clip_name}': {e}")
-                print(f"[CWK] Falling back to embedded CLIP")
+                if clip is None:
+                    print(f"[CWK] No embedded CLIP available (diffusion model)")
+                else:
+                    print(f"[CWK] Falling back to embedded CLIP")
+        elif clip is None and is_diffusion:
+            print(f"[CWK] Note: diffusion model has no embedded CLIP — set an external CLIP in the preset")
 
-        # ── Load external VAE if not embedded ─────────────────────────────────
+        # ── Load external VAE if needed ───────────────────────────────────────
         if vae_name and vae_name != "embedded":
             try:
                 vae = _load_external_vae(vae_name)
                 print(f"[CWK] External VAE loaded: {vae_name}")
             except Exception as e:
                 print(f"[CWK] Warning: could not load external VAE '{vae_name}': {e}")
-                print(f"[CWK] Falling back to embedded VAE")
+                if vae is None:
+                    print(f"[CWK] No embedded VAE available (diffusion model)")
+                else:
+                    print(f"[CWK] Falling back to embedded VAE")
+        elif vae is None and is_diffusion:
+            print(f"[CWK] Note: diffusion model has no embedded VAE — set an external VAE in the preset")
 
         # ── Apply clip_skip directly to the CLIP model ────────────────────────
-        try:
-            clip = clip.clone()
-            clip.clip_layer(clip_skip)
-        except Exception as e:
-            print(f"[CWK] Warning: could not apply clip_skip={clip_skip}: {e}")
+        if clip is not None:
+            try:
+                clip = clip.clone()
+                clip.clip_layer(clip_skip)
+            except Exception as e:
+                print(f"[CWK] Warning: could not apply clip_skip={clip_skip}: {e}")
 
         # ── Apply RNG ─────────────────────────────────────────────────────────
         model = _apply_rng(model, rng)
