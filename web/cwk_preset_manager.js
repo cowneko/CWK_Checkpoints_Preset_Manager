@@ -6,7 +6,7 @@ import { app }               from "../../scripts/app.js";
 import { injectStyles }      from "./cwk_styles.js";
 import { ModelBrowserPanel } from "./cwk_panel.js";
 
-// ─── Constants ─────────────────────────────────────────────────���──────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const NODE_TYPE = "CWK_ModelPresetManager";
 
@@ -217,13 +217,43 @@ function clampValue(row, val) {
   return row.type === "float" ? parseFloat(v.toFixed(2)) : v;
 }
 
-// ─── Modal number editor ──────────────────────────────────────────────────────
+// ─── Screen coords helper ─────────────────────────────────────────────────────
 
-function openNumberModal(row, currentValue, screenX, screenY, onCommit) {
-  closeNumberModal();
+function _canvasToScreen(node, vr) {
+  const bbox = app.canvas.canvas.getBoundingClientRect();
+  const zoom = app.canvas.ds?.scale ?? 1;
+  const off  = app.canvas.ds?.offset ?? [0, 0];
+  return {
+    x: (node.pos[0] + vr.x) * zoom + off[0] * zoom + bbox.left,
+    y: (node.pos[1] + vr.y) * zoom + off[1] * zoom + bbox.top,
+    w: vr.w * zoom,
+    h: vr.h * zoom,
+  };
+}
 
+// ─── Stop all LiteGraph-interceptable events on an element ────────────────────
+
+function _blockCanvasEvents(el) {
+  for (const evt of ["mousedown", "mouseup", "click", "pointerdown", "pointerup",
+                      "dblclick", "contextmenu", "wheel", "touchstart", "touchend"]) {
+    el.addEventListener(evt, e => e.stopPropagation());
+  }
+}
+
+// ─── Inline number editor (positioned exactly over the value cell) ────────────
+
+function openInlineNumberEditor(node, rowIdx, currentValue, onCommit) {
+  closeInlineEditor();
+  closeDropdown();
+
+  const row = INFO_ROWS[rowIdx];
+  const vr  = getValueRect(node, rowIdx);
+  const sc  = _canvasToScreen(node, vr);
+  const zoom = app.canvas.ds?.scale ?? 1;
+
+  // Create a transparent backdrop to catch all clicks outside the input
   const backdrop = document.createElement("div");
-  backdrop.id = "cwk-num-modal-backdrop";
+  backdrop.id = "cwk-inline-backdrop";
   Object.assign(backdrop.style, {
     position:   "fixed",
     inset:      "0",
@@ -231,167 +261,18 @@ function openNumberModal(row, currentValue, screenX, screenY, onCommit) {
     background: "transparent",
   });
 
-  const dialog = document.createElement("div");
-  Object.assign(dialog.style, {
-    position:     "fixed",
-    zIndex:       "99999",
-    background:   C.bgFull,
-    border:       `1px solid ${C.arrowHov}`,
-    borderRadius: "8px",
-    padding:      "16px 20px",
-    minWidth:     "200px",
-    boxShadow:    "0 8px 32px rgba(0,0,0,0.6)",
-    display:      "flex",
-    flexDirection:"column",
-    gap:          "10px",
-    fontFamily:   "Inter, system-ui, sans-serif",
-  });
-
-  const label = document.createElement("div");
-  label.textContent = row.label;
-  Object.assign(label.style, {
-    color:         C.textDim,
-    fontSize:      "11px",
-    textTransform: "uppercase",
-    letterSpacing: "0.05em",
-  });
-
   const input = document.createElement("input");
+  input.id        = "cwk-inline-editor";
   input.type      = "text";
-  input.inputMode = "numeric";
+  input.inputMode = "decimal";
   input.value     = String(currentValue ?? "");
   Object.assign(input.style, {
-    background:   C.surface,
-    color:        C.text,
-    border:       `1px solid ${C.border}`,
-    borderRadius: "4px",
-    padding:      "6px 10px",
-    fontSize:     "14px",
-    outline:      "none",
-    width:        "100%",
-    boxSizing:    "border-box",
-    textAlign:    "center",
-  });
-  input.addEventListener("focus", () => { input.style.borderColor = C.arrowHov; });
-  input.addEventListener("blur",  () => { input.style.borderColor = C.border;   });
-
-  const hint = document.createElement("div");
-  hint.textContent = `Range: ${row.min ?? "—"} → ${row.max ?? "—"}`;
-  Object.assign(hint.style, { color: C.textDim, fontSize: "10px", textAlign: "center" });
-
-  const btnRow = document.createElement("div");
-  Object.assign(btnRow.style, { display: "flex", gap: "8px" });
-
-  const mkBtn = (text, primary) => {
-    const b = document.createElement("button");
-    b.textContent = text;
-    Object.assign(b.style, {
-      flex:       "1",
-      padding:    "6px",
-      borderRadius:"4px",
-      border:     `1px solid ${primary ? C.arrowHov : C.border}`,
-      background: primary ? C.hoverBg : C.surface,
-      color:      primary ? C.arrowHov : C.textDim,
-      cursor:     "pointer",
-      fontSize:   "12px",
-      fontFamily: "Inter, system-ui, sans-serif",
-    });
-    return b;
-  };
-
-  const okBtn     = mkBtn("✓ OK",     true);
-  const cancelBtn = mkBtn("✕ Cancel", false);
-  btnRow.appendChild(okBtn);
-  btnRow.appendChild(cancelBtn);
-
-  dialog.appendChild(label);
-  dialog.appendChild(input);
-  dialog.appendChild(hint);
-  dialog.appendChild(btnRow);
-  backdrop.appendChild(dialog);
-  document.body.appendChild(backdrop);
-
-  requestAnimationFrame(() => {
-    const dw = dialog.offsetWidth  || 200;
-    const dh = dialog.offsetHeight || 120;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const margin = 8;
-
-    let x = screenX + 8;
-    let y = screenY + 8;
-
-    if (x + dw + margin > vw) x = screenX - dw - 8;
-    if (y + dh + margin > vh) y = screenY - dh - 8;
-    x = Math.max(margin, x);
-    y = Math.max(margin, y);
-
-    dialog.style.left = x + "px";
-    dialog.style.top  = y + "px";
-  });
-
-  input.focus();
-  input.select();
-
-  dialog.addEventListener("mousedown", e => e.stopPropagation());
-
-  let committed = false;
-  const commit = () => {
-    if (committed) return;
-    committed = true;
-    const raw = input.value.trim();
-    closeNumberModal();
-    if (raw !== "") onCommit(clampValue(row, raw));
-    app.canvas.setDirty(true, false);
-  };
-  const cancel = () => {
-    if (committed) return;
-    committed = true;
-    closeNumberModal();
-    app.canvas.setDirty(true, false);
-  };
-
-  okBtn.addEventListener("click",      commit);
-  cancelBtn.addEventListener("click",  cancel);
-  backdrop.addEventListener("mousedown", cancel);
-
-  input.addEventListener("keydown", e => {
-    if (e.key === "Enter")  { e.preventDefault(); commit(); }
-    if (e.key === "Escape") { cancel(); }
-  });
-}
-
-function closeNumberModal() {
-  const el = document.getElementById("cwk-num-modal-backdrop");
-  if (el) el.remove();
-}
-
-// ─── Dropdown ─────────────────────────────────────────────────────────────────
-
-let _dropdownOutside = null;
-
-function openDropdown(node, rowIdx, currentValue, onCommit) {
-  closeDropdown();
-  closeNumberModal();
-
-  const row  = INFO_ROWS[rowIdx];
-  const vr   = getValueRect(node, rowIdx);
-  const bbox = app.canvas.canvas.getBoundingClientRect();
-  const zoom = app.canvas.ds?.scale ?? 1;
-  const off  = app.canvas.ds?.offset ?? [0, 0];
-
-  const cx = (node.pos[0] + vr.x) * zoom + off[0] * zoom + bbox.left;
-  const cy = (node.pos[1] + vr.y) * zoom + off[1] * zoom + bbox.top;
-
-  const sel = document.createElement("select");
-  sel.id    = "cwk-node-dropdown";
-  Object.assign(sel.style, {
     position:     "fixed",
-    left:         cx + "px",
-    top:          cy + "px",
-    width:        (vr.w * zoom) + "px",
-    height:       (vr.h * zoom) + "px",
-    fontSize:     Math.round(11 * zoom) + "px",
+    left:         sc.x + "px",
+    top:          sc.y + "px",
+    width:        sc.w + "px",
+    height:       sc.h + "px",
+    fontSize:     Math.max(11, Math.round(11 * zoom)) + "px",
     fontFamily:   "Inter, system-ui, sans-serif",
     background:   C.bgFull,
     color:        C.text,
@@ -399,52 +280,177 @@ function openDropdown(node, rowIdx, currentValue, onCommit) {
     borderRadius: "3px",
     outline:      "none",
     zIndex:       "99999",
-    cursor:       "pointer",
-    padding:      "0 4px",
+    padding:      "0 6px",
+    textAlign:    "center",
+    boxSizing:    "border-box",
   });
 
-  for (const opt of row.options) {
-    const o = document.createElement("option");
-    o.value = opt; o.textContent = opt;
-    if (String(currentValue) === opt) o.selected = true;
-    sel.appendChild(o);
-  }
-
-  sel.addEventListener("mousedown", e => e.stopPropagation());
-  sel.addEventListener("mouseup",   e => e.stopPropagation());
-  sel.addEventListener("click",     e => e.stopPropagation());
-  document.body.appendChild(sel);
-  sel.focus();
-  setTimeout(() => sel.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), 0);
+  _blockCanvasEvents(input);
+  _blockCanvasEvents(backdrop);
 
   let committed = false;
   const commit = () => {
     if (committed) return;
     committed = true;
-    const val = sel.value;
-    closeDropdown();
-    onCommit(val);
+    const raw = input.value.trim();
+    closeInlineEditor();
+    if (raw !== "") onCommit(clampValue(row, raw));
+    app.canvas.setDirty(true, false);
+  };
+  const cancel = () => {
+    if (committed) return;
+    committed = true;
+    closeInlineEditor();
     app.canvas.setDirty(true, false);
   };
 
-  sel.addEventListener("change", commit);
-  sel.addEventListener("keydown", e => {
+  input.addEventListener("keydown", e => {
     e.stopPropagation();
     if (e.key === "Enter")  { e.preventDefault(); commit(); }
+    if (e.key === "Escape") { cancel(); }
+  });
+
+  // Click on backdrop = commit current value
+  backdrop.addEventListener("mousedown", e => {
+    e.stopPropagation();
+    e.preventDefault();
+    commit();
+  });
+  backdrop.addEventListener("pointerdown", e => {
+    e.stopPropagation();
+    e.preventDefault();
+    commit();
+  });
+
+  backdrop.appendChild(input);
+  document.body.appendChild(backdrop);
+
+  // Use requestAnimationFrame + setTimeout to ensure LiteGraph has fully
+  // released pointer capture before we try to focus the input
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 0);
+  });
+}
+
+function closeInlineEditor() {
+  const el = document.getElementById("cwk-inline-backdrop");
+  if (el) el.remove();
+  // Also remove orphaned input if backdrop wasn't used
+  const inp = document.getElementById("cwk-inline-editor");
+  if (inp) inp.remove();
+}
+
+// ─── Dropdown (single-click, compact size) ────────────────────────────────────
+
+let _dropdownOutside = null;
+
+function openDropdown(node, rowIdx, currentValue, onCommit) {
+  closeDropdown();
+  closeInlineEditor();
+
+  const row = INFO_ROWS[rowIdx];
+  const vr  = getValueRect(node, rowIdx);
+  const sc  = _canvasToScreen(node, vr);
+  const zoom = app.canvas.ds?.scale ?? 1;
+
+  // ── Compute how many visible rows to show (cap at 12) ─────────────
+  const maxVisible = Math.min(row.options.length, 12);
+  const optionH    = Math.max(16, Math.round(18 * zoom));
+  const listH      = maxVisible * optionH + 4; // +4 for border/padding
+  const vh         = window.innerHeight;
+
+  // Prefer opening downward; only flip if there's not enough room below
+  const spaceBelow = vh - sc.y - sc.h - 4;
+  const spaceAbove = sc.y - 4;
+  let dropTop;
+  if (spaceBelow >= listH || spaceBelow >= spaceAbove) {
+    // Open below the cell
+    dropTop = sc.y + sc.h + 1;
+  } else {
+    // Open above the cell
+    dropTop = sc.y - listH - 1;
+  }
+
+  const sel = document.createElement("select");
+  sel.id    = "cwk-node-dropdown";
+  sel.size  = maxVisible; // Make it a listbox, not a single-line select
+  Object.assign(sel.style, {
+    position:     "fixed",
+    left:         sc.x + "px",
+    top:          dropTop + "px",
+    width:        sc.w + "px",
+    height:       listH + "px",
+    fontSize:     Math.max(11, Math.round(11 * zoom)) + "px",
+    fontFamily:   "Inter, system-ui, sans-serif",
+    background:   C.bgFull,
+    color:        C.text,
+    border:       `1px solid ${C.arrowHov}`,
+    borderRadius: "4px",
+    outline:      "none",
+    zIndex:       "99999",
+    cursor:       "pointer",
+    padding:      "2px 0",
+    overflow:     "auto",
+  });
+
+  for (const opt of row.options) {
+    const o = document.createElement("option");
+    o.value = opt; o.textContent = opt;
+    Object.assign(o.style, {
+      padding:    "2px 8px",
+      background: String(currentValue) === opt ? C.hoverBg : "transparent",
+      color:      String(currentValue) === opt ? C.arrowHov : C.text,
+    });
+    if (String(currentValue) === opt) o.selected = true;
+    sel.appendChild(o);
+  }
+
+  _blockCanvasEvents(sel);
+
+  document.body.appendChild(sel);
+  sel.focus();
+
+  // Scroll the selected option into view
+  const selectedOpt = sel.querySelector("option:checked");
+  if (selectedOpt) selectedOpt.scrollIntoView({ block: "nearest" });
+
+  let committed = false;
+  const commit = (val) => {
+    if (committed) return;
+    committed = true;
+    closeDropdown();
+    onCommit(val ?? sel.value);
+    app.canvas.setDirty(true, false);
+  };
+
+  sel.addEventListener("click", () => {
+    // On click in a <select size=N>, the value is already updated
+    commit(sel.value);
+  });
+  sel.addEventListener("keydown", e => {
+    e.stopPropagation();
+    if (e.key === "Enter")  { e.preventDefault(); commit(sel.value); }
     if (e.key === "Escape") { committed = true; closeDropdown(); app.canvas.setDirty(true, false); }
   });
 
-  _dropdownOutside = (e) => { if (e.target !== sel) commit(); };
+  _dropdownOutside = (e) => {
+    if (e.target !== sel && !sel.contains(e.target)) {
+      if (!committed) { committed = true; closeDropdown(); app.canvas.setDirty(true, false); }
+    }
+  };
   setTimeout(() => {
-    document.addEventListener("mousedown", _dropdownOutside, { capture: true });
-  }, 100);
+    document.addEventListener("pointerdown", _dropdownOutside, { capture: true });
+  }, 50);
 }
 
 function closeDropdown() {
   const el = document.getElementById("cwk-node-dropdown");
   if (el) el.remove();
   if (_dropdownOutside) {
-    document.removeEventListener("mousedown", _dropdownOutside, { capture: true });
+    document.removeEventListener("pointerdown", _dropdownOutside, { capture: true });
     _dropdownOutside = null;
   }
 }
@@ -472,7 +478,7 @@ function drawNode(node, ctx) {
   ctx.fillStyle  = C.bg;
   ctx.fillRect(0, contentY, w, h - contentY);
 
-  // ── Thumbnail ─────────────────────────────────────────────────────────────
+  // ── Thumbnail ──────────────────────────────────────────────────────────────
   const img = loadImage(meta.thumbnail ?? null);
   roundRect(ctx, thumbR.x, thumbR.y, thumbR.w, thumbR.h, 6);
   ctx.fillStyle = C.surface; ctx.fill();
@@ -495,7 +501,7 @@ function drawNode(node, ctx) {
     ctx.fillText("🖼", thumbR.x + thumbR.w/2, thumbR.y + thumbR.h/2);
   }
 
-  // ── Model info ────────────────────────────────────────────────────────────
+  // ── Model info ─────────────────────────────────────────────────────────────
   const ny = thumbR.y + 6;
   const displayName = meta.civitai_name
     ?? (node._cwkModelName
@@ -514,14 +520,14 @@ function drawNode(node, ctx) {
     ctx.fillText(node._cwkModelName.replace(/^.*[/\\]/,""), infoX, ny + 38, infoW);
   }
 
-  // ── Divider ───────────────────────────────────────────────────────────────
+  // ── Divider ────────────────────────────────────────────────────────────────
   ctx.strokeStyle = C.border; ctx.lineWidth = 1;
   ctx.beginPath();
   const divY = getRowsStartY(node) - PAD/2;
   ctx.moveTo(PAD, divY); ctx.lineTo(w - PAD, divY);
   ctx.stroke();
 
-  // ── Preset rows ───────────────────────────────────────────────────────────
+  // ── Preset rows ────────────────────────────────────────────────────────────
   for (let i = 0; i < INFO_ROWS.length; i++) {
     const row     = INFO_ROWS[i];
     const ry      = getRowY(node, i);
@@ -567,7 +573,7 @@ function drawNode(node, ctx) {
     }
   }
 
-  // ── Buttons ───────────────────────────────────────────────────────────────
+  // ── Buttons ────────────────────────────────────────────────────────────────
   for (const r of getButtonRects(node)) {
     const isHov   = hover?.key === r.key;
     const isFlash = node._cwkFlash === r.key;
@@ -654,7 +660,7 @@ app.registerExtension({
         }
 
         if (part === "center") {
-          openNumberModal(row, cur, e.clientX, e.clientY, val => applyRowValue(node, rowIdx, val));
+          openInlineNumberEditor(node, rowIdx, cur, val => applyRowValue(node, rowIdx, val));
           return true;
         }
 

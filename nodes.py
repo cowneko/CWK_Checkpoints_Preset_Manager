@@ -11,7 +11,9 @@ Single node: CWK_ModelPresetManager
 
 import json
 import os
-from typing import Any, Dict, Tuple
+import re
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Tuple
 
 import folder_paths
 import comfy.samplers
@@ -77,6 +79,261 @@ def save_presets(presets: Dict[str, Any]) -> None:
             json.dump(presets, f, indent=2)
     except Exception as e:
         print(f"[CWK_PresetManager] Error saving presets: {e}")
+
+
+# ─── Sampler / Scheduler fallback system ───────────────────────────────────────
+#
+# When CivitAI metadata or other sources provide sampler/scheduler names that
+# don't match the locally installed ComfyUI samplers/schedulers, we try two
+# strategies before falling back to safe defaults (euler / simple):
+#
+#   1. Alias table — common A1111/CivitAI naming conventions mapped to ComfyUI
+#      internal names (e.g. "Euler a" → "euler_ancestral", "++" → "_pp")
+#
+#   2. Fuzzy match — normalise both the input and all available names, then
+#      pick the best match above a similarity threshold (0.6)
+#
+
+# ── Known aliases: CivitAI / A1111 name → ComfyUI internal name ──────────────
+
+_SAMPLER_ALIASES: Dict[str, str] = {
+    # A1111 display names
+    "euler a":                      "euler_ancestral",
+    "euler_a":                      "euler_ancestral",
+    "eulera":                       "euler_ancestral",
+    "heun":                         "heun",
+    "heunpp2":                      "heunpp2",
+    "dpm2":                         "dpm_2",
+    "dpm2 a":                       "dpm_2_ancestral",
+    "dpm2_a":                       "dpm_2_ancestral",
+    "dpm2 ancestral":               "dpm_2_ancestral",
+    "dpm++ 2s a":                   "dpmpp_2s_ancestral",
+    "dpm++ 2s ancestral":           "dpmpp_2s_ancestral",
+    "dpmpp_2s_a":                   "dpmpp_2s_ancestral",
+    "dpm++ 2m":                     "dpmpp_2m",
+    "dpm++ sde":                    "dpmpp_sde",
+    "dpm++ 2m sde":                 "dpmpp_2m_sde",
+    "dpm++ 3m sde":                 "dpmpp_3m_sde",
+    "dpm fast":                     "dpm_fast",
+    "dpm adaptive":                 "dpm_adaptive",
+    "lms":                          "lms",
+    "restart":                      "restart",
+    "ddim":                         "ddim",
+    "plms":                         "plms",
+    "uni_pc":                       "uni_pc",
+    "uni_pc_bh2":                   "uni_pc_bh2",
+    "unipc":                        "uni_pc",
+    "lcm":                          "lcm",
+    # A1111 often appends the scheduler to the sampler name
+    "dpm++ 2m karras":              "dpmpp_2m",
+    "dpm++ 2m sde karras":          "dpmpp_2m_sde",
+    "dpm++ sde karras":             "dpmpp_sde",
+    "dpm++ 3m sde karras":          "dpmpp_3m_sde",
+    "dpm++ 2s a karras":            "dpmpp_2s_ancestral",
+    "dpm++ 2m sde exponential":     "dpmpp_2m_sde",
+    "dpm++ 3m sde exponential":     "dpmpp_3m_sde",
+    # cfg++ variants — ++ becomes _pp in ComfyUI
+    "euler_cfg++":                  "euler_cfg_pp",
+    "euler_ancestral_cfg++":        "euler_ancestral_cfg_pp",
+    "euler cfg++":                  "euler_cfg_pp",
+    "euler ancestral cfg++":        "euler_ancestral_cfg_pp",
+    "euler_a_cfg++":                "euler_ancestral_cfg_pp",
+}
+
+_SCHEDULER_ALIASES: Dict[str, str] = {
+    "karras":       "karras",
+    "exponential":  "exponential",
+    "normal":       "normal",
+    "simple":       "simple",
+    "sgm_uniform":  "sgm_uniform",
+    "sgm uniform":  "sgm_uniform",
+    "ddim_uniform": "ddim_uniform",
+    "beta":         "beta",
+    "linear":       "normal",
+    "uniform":      "normal",
+}
+
+
+def _normalise(name: str) -> str:
+    """Lowercase, collapse whitespace, strip."""
+    return re.sub(r'\s+', ' ', name.strip().lower())
+
+
+def _strip_for_fuzzy(name: str) -> str:
+    """Remove all non-alphanumeric chars for fuzzy comparison."""
+    return re.sub(r'[^a-z0-9]', '', name.lower())
+
+
+def _fuzzy_match(name: str, candidates: List[str], threshold: float = 0.6) -> Optional[str]:
+    """Find the best fuzzy match among candidates. Returns None if below threshold."""
+    stripped = _strip_for_fuzzy(name)
+    best_score = 0.0
+    best_match = None
+    for c in candidates:
+        c_stripped = _strip_for_fuzzy(c)
+        # Try both SequenceMatcher and substring containment
+        score = SequenceMatcher(None, stripped, c_stripped).ratio()
+        # Bonus: if one is a substring of the other, boost the score
+        if stripped in c_stripped or c_stripped in stripped:
+            score = max(score, 0.8)
+        if score > best_score:
+            best_score = score
+            best_match = c
+    if best_score >= threshold:
+        return best_match
+    return None
+
+
+def resolve_sampler(name: str, available: Optional[List[str]] = None) -> str:
+    """
+    Resolve a sampler name to a valid ComfyUI sampler.
+
+    Strategy:
+      1. Exact match in available list
+      2. Alias table lookup
+      3. ++ → _pp substitution then re-check
+      4. Fuzzy match
+      5. Fallback to 'euler'
+
+    Returns the resolved sampler name and prints a warning if fallback was used.
+    """
+    if available is None:
+        available = list(comfy.samplers.KSampler.SAMPLERS)
+
+    if not name or not available:
+        fb = available[0] if available else "euler"
+        return fb
+
+    # 1) Exact match
+    if name in available:
+        return name
+
+    # 2) Alias table
+    normed = _normalise(name)
+    alias = _SAMPLER_ALIASES.get(normed)
+    if alias and alias in available:
+        print(f"[CWK] Sampler alias: '{name}' → '{alias}'")
+        return alias
+
+    # 3) ++ → _pp substitution (common CivitAI pattern)
+    pp_sub = name.replace("++", "_pp").replace(" ", "_").lower()
+    if pp_sub in available:
+        print(f"[CWK] Sampler ++ fix: '{name}' → '{pp_sub}'")
+        return pp_sub
+
+    # 3b) Also try normalising: lowercase, replace spaces with underscores
+    underscore = _normalise(name).replace(" ", "_").replace("++", "_pp")
+    if underscore in available:
+        print(f"[CWK] Sampler normalised: '{name}' → '{underscore}'")
+        return underscore
+
+    # 4) Fuzzy match
+    fuzzy = _fuzzy_match(name, available)
+    if fuzzy:
+        print(f"[CWK] Sampler fuzzy match: '{name}' → '{fuzzy}'")
+        return fuzzy
+
+    # 5) Fallback
+    fallback = "euler" if "euler" in available else available[0]
+    print(f"[CWK] ⚠ Sampler '{name}' not found — falling back to '{fallback}'")
+    return fallback
+
+
+def resolve_scheduler(name: str, available: Optional[List[str]] = None) -> str:
+    """
+    Resolve a scheduler name to a valid ComfyUI scheduler.
+
+    Strategy:
+      1. Exact match in available list
+      2. Alias table lookup
+      3. Fuzzy match
+      4. Fallback to 'simple'
+
+    Returns the resolved scheduler name and prints a warning if fallback was used.
+    """
+    if available is None:
+        available = list(comfy.samplers.KSampler.SCHEDULERS)
+
+    if not name or not available:
+        fb = available[0] if available else "simple"
+        return fb
+
+    # 1) Exact match
+    if name in available:
+        return name
+
+    # 2) Alias table
+    normed = _normalise(name)
+    alias = _SCHEDULER_ALIASES.get(normed)
+    if alias and alias in available:
+        print(f"[CWK] Scheduler alias: '{name}' → '{alias}'")
+        return alias
+
+    # 2b) Normalise: lowercase, replace spaces with underscores
+    underscore = normed.replace(" ", "_")
+    if underscore in available:
+        print(f"[CWK] Scheduler normalised: '{name}' → '{underscore}'")
+        return underscore
+
+    # 3) Fuzzy match
+    fuzzy = _fuzzy_match(name, available)
+    if fuzzy:
+        print(f"[CWK] Scheduler fuzzy match: '{name}' → '{fuzzy}'")
+        return fuzzy
+
+    # 4) Fallback
+    fallback = "simple" if "simple" in available else available[0]
+    print(f"[CWK] ⚠ Scheduler '{name}' not found — falling back to '{fallback}'")
+    return fallback
+
+
+def resolve_sampler_scheduler(
+    sampler_name: str,
+    scheduler: str,
+    available_samplers: Optional[List[str]] = None,
+    available_schedulers: Optional[List[str]] = None,
+) -> Tuple[str, str]:
+    """
+    Resolve both sampler and scheduler in one call.
+
+    Also handles the A1111 pattern where the scheduler is appended to the
+    sampler name (e.g. "DPM++ 2M Karras" → sampler="dpmpp_2m", scheduler="karras").
+    """
+    if available_samplers is None:
+        available_samplers = list(comfy.samplers.KSampler.SAMPLERS)
+    if available_schedulers is None:
+        available_schedulers = list(comfy.samplers.KSampler.SCHEDULERS)
+
+    # Check if sampler name contains an embedded scheduler (A1111 style)
+    # e.g. "DPM++ 2M SDE Karras" → sampler="DPM++ 2M SDE", scheduler hint="karras"
+    normed_sampler = _normalise(sampler_name)
+    scheduler_hint = None
+    for sched_name in sorted(available_schedulers, key=len, reverse=True):
+        sn_lower = sched_name.lower()
+        if normed_sampler.endswith(" " + sn_lower):
+            # The sampler name has an embedded scheduler
+            scheduler_hint = sched_name
+            # Strip the scheduler from the sampler name for alias lookup
+            stripped = sampler_name[:-(len(sched_name))].strip()
+            if stripped:
+                # Only use the stripped version if the alias table or available list
+                # can resolve it — otherwise keep the original
+                test = _SAMPLER_ALIASES.get(_normalise(stripped))
+                if test and test in available_samplers:
+                    sampler_name = stripped
+                elif _normalise(stripped).replace(" ", "_").replace("++", "_pp") in available_samplers:
+                    sampler_name = stripped
+            break
+
+    resolved_sampler = resolve_sampler(sampler_name, available_samplers)
+
+    # Use the embedded scheduler hint if the provided scheduler is empty or generic
+    if scheduler_hint and (not scheduler or scheduler in ("normal", "simple")):
+        scheduler = scheduler_hint
+
+    resolved_scheduler = resolve_scheduler(scheduler, available_schedulers)
+
+    return resolved_sampler, resolved_scheduler
 
 
 # ─── RNG application ──────────────────────────────────────────────────────────
@@ -244,6 +501,9 @@ class CWK_ModelPresetManager:
         rng          = override_rng            if override_rng        != "(preset)" else p["rng"]
         clip_name    = override_clip_name      if override_clip_name  != "(preset)" else p.get("clip_name", "embedded")
         vae_name     = override_vae_name       if override_vae_name   != "(preset)" else p.get("vae_name",  "embedded")
+
+        # ── Resolve sampler / scheduler with fallback ─────────────────────────
+        sampler_name, scheduler = resolve_sampler_scheduler(sampler_name, scheduler)
 
         # ── Load external CLIP if needed ──────────────────────────────────────
         if clip_name and clip_name != "embedded":

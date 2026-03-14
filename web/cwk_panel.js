@@ -560,7 +560,7 @@ export class ModelBrowserPanel {
     for (const m of newModels) { m._resolving = true; this._updateCard(m); }
     this._setProgress(0, total);
 
-    let resolved = 0, thumbsFound = 0;
+    let resolved = 0, thumbsFound = 0, presetsPopulated = 0;
 
     try {
       const response = await fetch("/cwk/civitai/fetch/stream", {
@@ -608,22 +608,32 @@ export class ModelBrowserPanel {
             model.civitai    = p.info;
             model._resolving = false;
             if (p.info?.thumbnail) thumbsFound++;
+            if (p.preset_extracted) {
+              presetsPopulated++;
+              model.preset = { ...(model.preset || {}), ...p.preset_extracted };
+            }
             this._updateCard(model);
           }
           resolved++;
           this._setProgress(resolved, total);
           this._setStatus(
             `Fetching… ${resolved} / ${total}` +
-            (thumbsFound ? ` · ${thumbsFound} 🖼` : "")
+            (thumbsFound ? ` · ${thumbsFound} 🖼` : "") +
+            (presetsPopulated ? ` · ${presetsPopulated} presets` : "")
           );
         }
       }
 
       this._setStatus(
         thumbsFound
-          ? `✓ ${thumbsFound} thumbnail${thumbsFound !== 1 ? "s" : ""} fetched for new models`
+          ? `✓ ${thumbsFound} thumbnail${thumbsFound !== 1 ? "s" : ""} fetched for new models` +
+            (presetsPopulated ? ` · ${presetsPopulated} preset${presetsPopulated !== 1 ? "s" : ""} auto-populated` : "")
           : `✓ No thumbnails found for new models (not on CivitAI)`
       );
+
+      // ── Auto-reload model list to refresh sidebar presets ─────────────
+      await this._reloadModels();
+
     } catch (e) {
       if (e.name !== "AbortError") {
         this._setStatus(`✗ Thumbnail fetch failed: ${e.message}`, true);
@@ -993,6 +1003,34 @@ export class ModelBrowserPanel {
     this._onLoadCallback?.(this._selected);
     this.hide();
   }
+  
+    async _reloadModels() {
+    try {
+      const freshModels = await apiFetch("/cwk/models");
+      // Preserve in-memory civitai data and resolving state
+      for (const fresh of freshModels) {
+        const existing = this._models.find(m => m.name === fresh.name);
+        if (existing) {
+          // Keep the civitai data we just fetched (it may be newer than server cache)
+          fresh.civitai = existing.civitai || fresh.civitai;
+          fresh._resolving = existing._resolving;
+        }
+      }
+      this._models = freshModels;
+      this._applyFilter(document.getElementById("cwk-search")?.value || "");
+      document.getElementById("cwk-total-count").textContent =
+        `${this._models.length} model${this._models.length !== 1 ? "s" : ""}`;
+      // Re-select the currently selected model to refresh the sidebar
+      if (this._selected) {
+        const stillExists = this._models.find(m => m.name === this._selected);
+        if (stillExists) {
+          this._selectModel(this._selected);
+        }
+      }
+    } catch (e) {
+      console.warn("[CWK] Failed to reload models after fetch:", e);
+    }
+  }
 
   // ── Check Updates ────────────────────────────────────────────────────────���────
 
@@ -1061,7 +1099,7 @@ export class ModelBrowserPanel {
     this._renderGrid();
     this._setProgress(0, total);
 
-    let resolved = 0, thumbsFound = 0;
+    let resolved = 0, thumbsFound = 0, presetsPopulated = 0;
 
     try {
       const response = await fetch("/cwk/civitai/fetch/stream", {
@@ -1097,11 +1135,11 @@ export class ModelBrowserPanel {
             this._civitaiKey = "";
             localStorage.removeItem("cwk_civitai_key");
             this._updateKeyLabel();
-            for (const m of this._models) m._resolving = false;
+            for (const m of this._models) { m._resolving = false; }
             this._renderGrid();
             this._setProgress(0, 0);
-            btn.innerHTML = orig; btn.disabled = false; rBtn.disabled = false;
             this._fetchAbort = null;
+            btn.innerHTML = orig; btn.disabled = false; rBtn.disabled = false;
             return;
           }
           if (p.done && !p.model) break outer;
@@ -1111,20 +1149,31 @@ export class ModelBrowserPanel {
             model.civitai    = p.info;
             model._resolving = false;
             if (p.info?.thumbnail) thumbsFound++;
+            if (p.preset_extracted) {
+              presetsPopulated++;
+              // Update the in-memory preset so the sidebar shows new values
+              model.preset = { ...(model.preset || {}), ...p.preset_extracted };
+            }
             this._updateCard(model);
           }
           resolved++;
           this._setProgress(resolved, total);
           this._setStatus(
             `Fetching… ${resolved} / ${total}` +
-            (thumbsFound ? ` · ${thumbsFound} 🖼` : "")
+            (thumbsFound ? ` · ${thumbsFound} 🖼` : "") +
+            (presetsPopulated ? ` · ${presetsPopulated} presets` : "")
           );
         }
       }
       this._setStatus(
         `✓ Done — ${thumbsFound} thumbnail${thumbsFound !== 1 ? "s" : ""} found` +
+        (presetsPopulated ? ` · ${presetsPopulated} preset${presetsPopulated !== 1 ? "s" : ""} auto-populated` : "") +
         (thumbsFound < total ? ` · ${total - thumbsFound} not on CivitAI` : "")
       );
+
+      // ── Auto-reload model list to refresh sidebar presets ─────────────
+      await this._reloadModels();
+
     } catch (e) {
       if (e.name !== "AbortError") {
         this._setStatus(`✗ Fetch failed: ${e.message}`, true);

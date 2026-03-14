@@ -152,6 +152,71 @@ function _injectInfoStyles() {
     }
     .cwk-info-eye-btn:hover { background:rgba(137,180,250,.3); }
 
+    /* Metadata button — bottom-right of each image card */
+    .cwk-info-meta-btn {
+      position:absolute; bottom:5px; right:5px;
+      background:rgba(20,24,36,.85); border:1px solid #313552;
+      border-radius:4px; padding:2px 6px; font-size:11px;
+      cursor:pointer; z-index:2; color:#89b4fa;
+      transition:background .15s, color .15s; line-height:1.4;
+      pointer-events:all;
+    }
+    .cwk-info-meta-btn:hover { background:rgba(137,180,250,.25); color:#cdd6f4; }
+
+    /* Metadata popup overlay */
+    .cwk-meta-popup-overlay {
+      position:fixed; inset:0; background:rgba(0,0,0,.7);
+      z-index:100002; display:flex; align-items:center; justify-content:center;
+    }
+    .cwk-meta-popup {
+      background:#141824; border:1px solid #2a2f45; border-radius:10px;
+      padding:20px; max-width:640px; width:90vw; max-height:80vh;
+      overflow-y:auto; font-family:Inter,system-ui,sans-serif; color:#cdd6f4;
+      box-shadow:0 16px 60px rgba(0,0,0,.8);
+    }
+    .cwk-meta-popup::-webkit-scrollbar { width:5px; }
+    .cwk-meta-popup::-webkit-scrollbar-track { background:#141824; }
+    .cwk-meta-popup::-webkit-scrollbar-thumb { background:#313552; border-radius:3px; }
+    .cwk-meta-popup-header {
+      display:flex; align-items:center; justify-content:space-between;
+      margin-bottom:14px;
+    }
+    .cwk-meta-popup-title { font-size:15px; font-weight:700; color:#89b4fa; }
+    .cwk-meta-popup-close {
+      background:none; border:none; color:#6c7086; font-size:20px;
+      cursor:pointer; transition:color .15s;
+    }
+    .cwk-meta-popup-close:hover { color:#f38ba8; }
+    .cwk-meta-row { margin-bottom:12px; }
+    .cwk-meta-row-label {
+      font-size:10px; color:#6c7086; font-weight:700;
+      text-transform:uppercase; letter-spacing:.05em; margin-bottom:4px;
+      display:flex; align-items:center; gap:6px;
+    }
+    .cwk-meta-row-value {
+      background:#1e2335; border:1px solid #313552; border-radius:6px;
+      padding:8px 10px; font-size:12px; color:#cdd6f4; line-height:1.5;
+      white-space:pre-wrap; word-break:break-word;
+    }
+    .cwk-meta-copy-btn {
+      background:none; border:1px solid #313552; border-radius:3px;
+      color:#6c7086; font-size:11px; cursor:pointer; padding:1px 5px;
+      transition:color .15s, border-color .15s;
+    }
+    .cwk-meta-copy-btn:hover { color:#89b4fa; border-color:#89b4fa; }
+    .cwk-meta-params-grid {
+      display:grid; grid-template-columns:repeat(auto-fill, minmax(120px,1fr)); gap:8px;
+    }
+    .cwk-meta-param {
+      background:#1e2335; border:1px solid #313552; border-radius:6px;
+      padding:8px 10px; text-align:center;
+    }
+    .cwk-meta-param-label {
+      font-size:10px; color:#6c7086; font-weight:700;
+      text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px;
+    }
+    .cwk-meta-param-value { font-size:13px; color:#cdd6f4; font-weight:600; }
+
     .cwk-info-desc-wrap { font-size:13px; color:#a6adc8; line-height:1.7; }
     .cwk-info-desc-wrap h1,.cwk-info-desc-wrap h2,.cwk-info-desc-wrap h3 {
       color:#cdd6f4; margin:.6em 0 .3em;
@@ -191,6 +256,153 @@ function _renderTagsInto(el, tags) {
   el.innerHTML = tags.map(t => `<span class="cwk-info-tag">${_esc(t)}</span>`).join("");
 }
 
+// ─── Metadata popup for a single image ────────────────────────────────────────
+
+function _showImageMetadata(imgObj) {
+  const meta = imgObj?.meta;
+  if (!meta || typeof meta !== "object") {
+    alert("No generation metadata available for this image.");
+    return;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "cwk-meta-popup-overlay";
+
+  const popup = document.createElement("div");
+  popup.className = "cwk-meta-popup";
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "cwk-meta-popup-header";
+  header.innerHTML = `
+    <span class="cwk-meta-popup-title">📋 Image Generation Metadata</span>
+    <button class="cwk-meta-popup-close" title="Close">✕</button>
+  `;
+  popup.appendChild(header);
+
+  header.querySelector(".cwk-meta-popup-close").addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+
+  // ── Prompt fields (with copy button) ──────────────────────────────────────
+  const prompt = meta.prompt || meta.Prompt || "";
+  const negPrompt = meta.negativePrompt || meta.NegativePrompt || meta.negative_prompt || "";
+
+  function _addPromptRow(label, text) {
+    if (!text) return;
+    const row = document.createElement("div");
+    row.className = "cwk-meta-row";
+
+    const labelEl = document.createElement("div");
+    labelEl.className = "cwk-meta-row-label";
+    labelEl.innerHTML = `${_esc(label)} `;
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "cwk-meta-copy-btn";
+    copyBtn.textContent = "📋 Copy";
+    copyBtn.title = `Copy ${label} to clipboard`;
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.textContent = "✓ Copied!";
+        setTimeout(() => { copyBtn.textContent = "📋 Copy"; }, 1500);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        copyBtn.textContent = "✓ Copied!";
+        setTimeout(() => { copyBtn.textContent = "📋 Copy"; }, 1500);
+      }
+    });
+    labelEl.appendChild(copyBtn);
+
+    const valueEl = document.createElement("div");
+    valueEl.className = "cwk-meta-row-value";
+    valueEl.textContent = text;
+
+    row.appendChild(labelEl);
+    row.appendChild(valueEl);
+    popup.appendChild(row);
+  }
+
+  _addPromptRow("Positive Prompt", prompt);
+  _addPromptRow("Negative Prompt", negPrompt);
+
+  // ── Generation parameters (grid of small cards) ───────────────────────────
+  const params = [];
+
+  const sampler = meta.sampler || meta.Sampler;
+  if (sampler) params.push({ label: "Sampler", value: sampler });
+
+  const scheduler = meta.scheduler || meta["Schedule type"] || meta.Scheduler;
+  if (scheduler) params.push({ label: "Scheduler", value: scheduler });
+
+  const cfg = meta.cfgScale ?? meta.CfgScale ?? meta.cfg;
+  if (cfg !== undefined && cfg !== null) params.push({ label: "CFG Scale", value: String(cfg) });
+
+  const steps = meta.steps ?? meta.Steps;
+  if (steps !== undefined && steps !== null) params.push({ label: "Steps", value: String(steps) });
+
+  const clipSkip = meta.clipSkip ?? meta.ClipSkip ?? meta.clip_skip;
+  if (clipSkip !== undefined && clipSkip !== null) params.push({ label: "Clip Skip", value: String(clipSkip) });
+
+  const seed = meta.seed ?? meta.Seed;
+  if (seed !== undefined && seed !== null) params.push({ label: "Seed", value: String(seed) });
+
+  const size = meta.Size || meta.size;
+  if (size) params.push({ label: "Size", value: size });
+
+  if (params.length > 0) {
+    const paramsLabel = document.createElement("div");
+    paramsLabel.className = "cwk-meta-row-label";
+    paramsLabel.style.marginBottom = "8px";
+    paramsLabel.textContent = "Generation Parameters";
+    popup.appendChild(paramsLabel);
+
+    const grid = document.createElement("div");
+    grid.className = "cwk-meta-params-grid";
+
+    for (const p of params) {
+      const cell = document.createElement("div");
+      cell.className = "cwk-meta-param";
+      cell.innerHTML = `
+        <div class="cwk-meta-param-label">${_esc(p.label)}</div>
+        <div class="cwk-meta-param-value">${_esc(p.value)}</div>
+      `;
+      grid.appendChild(cell);
+    }
+    popup.appendChild(grid);
+  }
+
+  // ── No metadata at all ────────────────────────────────────────────────────
+  if (!prompt && !negPrompt && params.length === 0) {
+    const noData = document.createElement("div");
+    noData.className = "cwk-info-placeholder";
+    noData.textContent = "No generation metadata available for this image.";
+    popup.appendChild(noData);
+  }
+
+  overlay.appendChild(popup);
+  document.body.appendChild(overlay);
+}
+
+// ─── Check if image has metadata ──────────────────────────────────────────────
+
+function _hasMetadata(imgObj) {
+  const meta = imgObj?.meta;
+  if (!meta || typeof meta !== "object") return false;
+  return !!(
+    meta.prompt || meta.Prompt ||
+    meta.negativePrompt || meta.NegativePrompt || meta.negative_prompt ||
+    meta.sampler || meta.Sampler ||
+    meta.steps || meta.Steps ||
+    meta.cfgScale || meta.CfgScale || meta.cfg ||
+    meta.seed || meta.Seed
+  );
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export function showModelInfo(model, civitaiApiKey = "") {
@@ -211,9 +423,6 @@ export function showModelInfo(model, civitaiApiKey = "") {
   const fullPath    = model.file_path || model.name;
   const sizeStr     = _fmtBytes(model.file_size ?? 0);
   const civitaiUrl  = modelId ? `https://civitai.com/models/${modelId}` : null;
-
-  // OLD — treats [] as "confirmed no tags", never fetches:
-  // const tagsState = Array.isArray(c.tags) ? "ready" : "fetch";
 
   // NEW — [] is treated as "unknown, fetch to confirm":
   const tagsState = (Array.isArray(c.tags) && c.tags.length > 0) ? "ready" : "fetch";
@@ -302,8 +511,6 @@ export function showModelInfo(model, civitaiApiKey = "") {
   overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
 
   // ── Tags: fetch live from model-description endpoint when not in cache ──────
-  // The model-description endpoint calls GET /models/{id} which has tags at
-  // the top level. It also writes them back to the cache on the server side.
   if (tagsState === "fetch" && modelId) {
     const tagUrl = `/cwk/civitai/model-description?model=${encodeURIComponent(model.name)}`
       + (civitaiApiKey ? `&api_key=${encodeURIComponent(civitaiApiKey)}` : "");
@@ -313,7 +520,6 @@ export function showModelInfo(model, civitaiApiKey = "") {
       .then(d => {
         console.log("[CWK] model-description response for tags:", d);
         const tags = Array.isArray(d.tags) ? d.tags : [];
-        // Update in-memory model so next open is instant
         if (model.civitai) model.civitai.tags = tags;
         _renderTagsInto(tagsEl, tags);
       })
@@ -355,7 +561,6 @@ export function showModelInfo(model, civitaiApiKey = "") {
             descWrap.innerHTML = d.description
               ? d.description
               : `<div class="cwk-info-placeholder">No description available on CivitAI.</div>`;
-            // Opportunistically update tags if the tags fetch hadn't fired yet
             if (tagsState === "fetch" && Array.isArray(d.tags) && tagsEl) {
               if (model.civitai) model.civitai.tags = d.tags;
               _renderTagsInto(tagsEl, d.tags);
@@ -368,7 +573,7 @@ export function showModelInfo(model, civitaiApiKey = "") {
     });
   });
 
-  // ── Image grid ──────────────────��──────────────────────────────────────────
+  // ── Image grid ────────────────────────────────────────────────────────────
   const gridEl = box.querySelector("#cwk-info-image-grid");
 
   function _renderImages(imgs) {
@@ -380,9 +585,9 @@ export function showModelInfo(model, civitaiApiKey = "") {
 
     for (const img of imgs) {
       const url    = typeof img === "string" ? img : img.url;
-      // nsfwLevel already normalised 0-4 by server. Blur at >= 3 (X/XXX only)
       const lvl    = img?.nsfwLevel ?? 0;
       const isNsfw = lvl >= _INFO_NSFW_BLUR;
+      const hasMeta = _hasMetadata(img);
 
       const card   = document.createElement("div");
       card.className = "cwk-info-image-card" + (isNsfw ? " blurred" : "");
@@ -391,8 +596,15 @@ export function showModelInfo(model, civitaiApiKey = "") {
         ? `<video src="${_esc(url)}" muted autoplay loop playsinline></video>`
         : `<img src="${_esc(url)}" loading="lazy"/>`;
 
-      card.innerHTML = mediaSrc
-        + (isNsfw ? `<button class="cwk-info-eye-btn" title="Toggle blur">🙈</button>` : "");
+      let buttonsHtml = "";
+      if (isNsfw) {
+        buttonsHtml += `<button class="cwk-info-eye-btn" title="Toggle blur">🙈</button>`;
+      }
+      if (hasMeta) {
+        buttonsHtml += `<button class="cwk-info-meta-btn" title="View generation metadata">📋</button>`;
+      }
+
+      card.innerHTML = mediaSrc + buttonsHtml;
 
       if (isNsfw) {
         const eye = card.querySelector(".cwk-info-eye-btn");
@@ -401,6 +613,14 @@ export function showModelInfo(model, civitaiApiKey = "") {
           const blurred = card.classList.toggle("blurred");
           eye.textContent = blurred ? "🙈" : "👁";
           eye.title       = blurred ? "Reveal image" : "Blur image";
+        });
+      }
+
+      if (hasMeta) {
+        const metaBtn = card.querySelector(".cwk-info-meta-btn");
+        metaBtn.addEventListener("click", e => {
+          e.stopPropagation();
+          _showImageMetadata(img);
         });
       }
 

@@ -6,6 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.5.0] — 2026-03-14
+
+### Added
+
+#### Sampler / Scheduler Fallback System
+- **Alias table** — comprehensive mapping of A1111 and CivitAI display names to ComfyUI internal sampler/scheduler names (e.g. `Euler a` → `euler_ancestral`, `DPM++ 2M Karras` → `dpmpp_2m` + scheduler `karras`, `euler_ancestral_cfg++` → `euler_ancestral_cfg_pp`)
+- **Pattern normalisation** — automatic `++` → `_pp` substitution, spaces → underscores, and case folding to catch common mismatches
+- **Embedded scheduler extraction** — when a sampler name contains an appended scheduler (A1111 style, e.g. "DPM++ 3M SDE Exponential"), the scheduler is split out and both are resolved independently
+- **Fuzzy matching** — `difflib.SequenceMatcher` with substring containment bonus (threshold 0.6) finds the closest installed sampler/scheduler when alias and normalisation fail
+- **Safe fallback** — if no match is found at all, falls back to `euler` / `simple` with a console warning
+- All resolution steps are logged to the console: alias hits, normalisation fixes, fuzzy matches, and fallback warnings
+- New public functions in `nodes.py`: `resolve_sampler()`, `resolve_scheduler()`, `resolve_sampler_scheduler()`
+- Fallback is applied both at **execution time** (in the node's `execute()`) and at **preset auto-population time** (in `server.py` when writing presets from CivitAI image metadata)
+
+---
+
+## [1.4.0] — 2026-03-14
+
+### Added
+
+#### Image Metadata Viewer
+- **📋 Metadata button** on example images in the Model Info overlay — click to open a detailed popup showing the generation parameters used for that image
+- Displays **Positive Prompt** and **Negative Prompt** with a **📋 Copy** button next to each for one-click clipboard copy
+- Shows generation parameters in a compact grid: **Sampler**, **Scheduler**, **CFG Scale**, **Steps**, **Clip Skip**, **Seed**, **Size** — fields without data are automatically hidden
+- Full styled popup with dark theme matching the rest of the UI
+
+#### Preset Auto-Population from CivitAI Example Images
+- When **adding a new model/version** to the manager, the node now fetches generation metadata from CivitAI example images and automatically populates the model's preset with the best available values (sampler, scheduler, CFG, steps, clip skip, resolution)
+- The image with the most metadata fields available is chosen automatically
+- Preset is auto-saved after population — no manual save step needed
+- **Fetch Thumbnails/Infos** button in the Model Browser now also auto-populates presets for all models that have CivitAI example image metadata
+- Status bar shows the count of presets auto-populated alongside thumbnail count during fetch
+
+#### Auto-Reload Model List After Fetch
+- After SSE fetch completes (both full fetch and new-model-only fetch), the model list is automatically reloaded from the server
+- The sidebar preset editor refreshes immediately to show newly populated preset values
+- New `_reloadModels()` method on `ModelBrowserPanel` handles the refresh while preserving in-memory civitai data and current selection
+
+### Changed
+
+#### Inline Number Editing (replaces modal popup)
+- **Removed** the modal dialog popup for editing numeric values (CFG, Steps, Clip Skip, Width, Height)
+- **New inline editor** — clicking the center value of a numeric row now opens a text input positioned exactly over the value cell on the canvas
+- Uses a full-screen transparent backdrop to catch outside clicks and commit the value
+- Deferred focus (`requestAnimationFrame` + `setTimeout`) to work around LiteGraph's pointer capture stealing focus
+- Enter to commit, Escape to cancel, click outside to commit — no OK/Cancel buttons needed
+- Shared `_blockCanvasEvents()` helper blocks all pointer/mouse/touch events from propagating to LiteGraph
+
+#### Compact Dropdown Menus
+- Dropdown menus for list fields (Sampler, Scheduler, RNG, CLIP, VAE) now render as a **compact listbox** (`<select size=N>`) instead of the browser's native dropdown popup
+- Maximum **6 visible items** with scroll — keeps the dropdown short and manageable
+- **Smart positioning** — opens below the value cell by default; only flips upward when there isn't enough space below the cell
+- Uses `pointerdown` (instead of `mousedown`) for outside-click detection, improving compatibility with LiteGraph's event system
+- Click on an option immediately commits the selection (no need for a separate "change" event)
+
+### Fixed
+
+- Fixed dropdown menus requiring a double-click to open due to LiteGraph consuming the first pointer event — now all pointer/mouse/touch/key events are blocked from propagating using a comprehensive `_blockCanvasEvents()` helper
+- Fixed inline number input never receiving focus because LiteGraph's pointer capture stole it immediately — resolved by deferring focus with `requestAnimationFrame` + `setTimeout` and using a backdrop element instead of relying on `blur`
+
+---
+
 ## [1.3.0] — 2026-03-11
 
 ### Changed

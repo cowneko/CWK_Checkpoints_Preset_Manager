@@ -10,14 +10,15 @@ A [ComfyUI](https://github.com/comfyanonymous/ComfyUI) custom node that combines
 - Fully custom-drawn node UI using LiteGraph `onDrawForeground` — no standard ComfyUI widgets
 - Model thumbnail displayed directly on the node with cover-fit crop and rounded corners
 - Inline editable preset rows with **◀ ▶** arrow buttons for stepping numeric values
-- Click the center value to open a modal dialog for direct numeric input
-- Native `<select>` dropdowns for list fields (Sampler, Scheduler, RNG, CLIP, VAE)
+- Click the center value to open an **inline text input** directly over the value cell for direct numeric entry — Enter to commit, Escape to cancel, click outside to commit
+- Compact **listbox dropdowns** for list fields (Sampler, Scheduler, RNG, CLIP, VAE) — single-click to open, max 6 visible items with scroll, smart up/down positioning
 - Three action buttons: **📂 Load Model**, **↩ Reset**, **💾 Update Preset**
 - Node size auto-calculated based on content; minimum width enforced
 
 ### 💾 Per-Model Preset System
 - Save and load generation presets **per checkpoint model** — each model remembers its own settings
 - Preset fields: **Sampler**, **Scheduler**, **CFG**, **Steps**, **Clip Skip**, **Width**, **Height**, **RNG**, **CLIP**, **VAE**
+- **Auto-populate presets from CivitAI** — when adding a new model or fetching thumbnails, the node extracts generation metadata (sampler, scheduler, CFG, steps, clip skip, resolution) from CivitAI example images and automatically saves them as the model's preset
 - Presets stored in `checkpoint_presets.json` and merged with per-execution widget overrides at runtime
 - **Clip skip** applied directly to the CLIP model via `clip.clip_layer()` — no extra node needed
 - **RNG control** — choose between **CPU**, **GPU**, or **NV** (NVidia Philox) noise generation per model:
@@ -26,6 +27,24 @@ A [ComfyUI](https://github.com/comfyanonymous/ComfyUI) custom node that combines
   - Includes vendored Philox 4×32 RNG for NVidia-compatible cross-GPU reproducibility
   - Patches `comfy.sample.prepare_noise` and hijacks k-diffusion's `default_noise_sampler` for consistent noise in all samplers
 - **External CLIP & VAE** — select `embedded` (uses the checkpoint's built-in CLIP/VAE) or pick any external CLIP or VAE model file from ComfyUI's `clip`/`vae` folders; the selection is saved as part of the preset so each model can have its own preferred CLIP and VAE
+
+### 🔀 Sampler / Scheduler Fallback System
+Some models on CivitAI use sampler or scheduler names that don't exist in the user's ComfyUI installation — either because they follow A1111 naming conventions, contain typos, or reference custom samplers that aren't installed. Instead of crashing at generation time, the node resolves names through a multi-layer fallback:
+
+1. **Alias table** — maps common A1111 and CivitAI display names to ComfyUI internal names:
+   | CivitAI / A1111 | ComfyUI |
+   |---|---|
+   | `Euler a` | `euler_ancestral` |
+   | `DPM++ 2M` | `dpmpp_2m` |
+   | `DPM++ 2M SDE Karras` | `dpmpp_2m_sde` + scheduler `karras` |
+   | `euler_ancestral_cfg++` | `euler_ancestral_cfg_pp` |
+
+2. **Pattern normalisation** — `++` → `_pp`, spaces → underscores, case folding
+3. **Embedded scheduler extraction** — detects when a scheduler name is appended to the sampler (A1111 style) and splits them apart
+4. **Fuzzy matching** — finds the closest installed sampler/scheduler using `difflib.SequenceMatcher` with substring containment bonus
+5. **Safe fallback** — if nothing matches, falls back to `euler` / `simple` with a console warning
+
+Fallback is applied both at **execution time** and when **auto-populating presets** from CivitAI metadata. All resolution steps are logged to the console.
 
 ### 📂 Model Browser & Manager
 The Model Browser is a full visual panel that opens from the node's **📂 Load Model** button. It serves as both a model selector and a complete model manager:
@@ -39,9 +58,10 @@ The Model Browser is a full visual panel that opens from the node's **📂 Load 
 - **Drag to reposition** and **resize handle** — panel size and position persist across sessions via `localStorage`
 
 #### CivitAI Integration
-- **Fetch Thumbnails/Infos** — streams metadata from the CivitAI API for all models with a live progress bar (SSE-based, concurrent requests)
+- **Fetch Thumbnails/Infos** — streams metadata from the CivitAI API for all models with a live progress bar (SSE-based, concurrent requests); also **auto-populates presets** from example image metadata and **auto-refreshes** the model list and sidebar when complete
 - **↺ Rebuild Cache** — force re-fetches all metadata from CivitAI, ignoring the local cache (favorites and manual overrides are preserved)
-- **Model Info overlay** — right-click any card → **Model Info** to view a detailed overlay with model name, version, base model, file size, file path, tags, example images gallery (with lightbox), and the full CivitAI model description (HTML rendered)
+- **Model Info overlay** — right-click any card → **Model Info** to view a detailed overlay with model name, version, base model, file size, file path, tags, example images gallery (with lightbox and **📋 metadata viewer**), and the full CivitAI model description (HTML rendered)
+- **📋 Image Metadata Viewer** — click the 📋 button on any example image in the Model Info overlay to view its generation metadata: positive/negative prompts (with copy-to-clipboard), sampler, scheduler, CFG, steps, clip skip, seed, and size
 - **CivitAI API key management** — set your API key directly in the panel with a validation button to confirm it works
 
 #### Model Updates & Downloads
@@ -63,6 +83,7 @@ The Model Browser is a full visual panel that opens from the node's **📂 Load 
 - All preset fields are shown: Sampler, Scheduler, CFG, Steps, Clip Skip, RNG, Width, Height, CLIP, VAE
 - Click **Edit Preset** to unlock the fields, modify values, then click **Save Preset** to persist
 - Sampler and scheduler lists are loaded dynamically from ComfyUI's `/object_info` endpoint, so they automatically reflect any installed sampler extensions
+- **Auto-refreshes** after Fetch Thumbnails/Infos to immediately display newly populated preset values
 
 ---
 
@@ -98,7 +119,7 @@ Right-click the canvas → **Add Node** → **CWK / CWK Model Preset Manager**
 Click **📂 Load Model** to open the Model Browser. Select a model card and click **Load Model**. The node will load the checkpoint and apply its saved preset (or defaults if no preset exists yet).
 
 ### 3. Edit a preset
-On the node, click the **◀ ▶** arrows to step numeric values, or click the center value to type a number directly. Dropdown rows (Sampler, Scheduler, RNG, CLIP, VAE) open a native selector. You can also edit presets from the sidebar in the Model Browser panel.
+On the node, click the **◀ ▶** arrows to step numeric values, or click the center value to type a number directly in the inline editor. Dropdown rows (Sampler, Scheduler, RNG, CLIP, VAE) open a compact listbox on single click. You can also edit presets from the sidebar in the Model Browser panel.
 
 ### 4. Save a preset
 Click **💾 Update Preset** to save the current values as the preset for the loaded model. Next time you load this model, these settings will be restored automatically.
@@ -121,6 +142,17 @@ Use the Model Browser to organize your collection:
 - **Right-click** any card for options: view model info, pick or set thumbnails, check for updates, refresh CivitAI data, or delete the model
 - **Check Updates** to see which models have newer versions on CivitAI, then download any version directly from the version checker
 
+### 9. View image metadata
+In the Model Info overlay, click the **📋** button on any example image to view its generation metadata — prompts, sampler, scheduler, CFG, steps, clip skip, seed, and size. Use the **📋 Copy** buttons to copy prompts to the clipboard.
+
+### 10. Sampler / scheduler fallback
+If a preset or CivitAI metadata contains a sampler or scheduler name that isn't installed (e.g. A1111 naming like "Euler a" or "DPM++ 2M Karras"), the node automatically resolves it to the closest available match. If no close match exists, it falls back safely to `euler` / `simple`. Check the ComfyUI console for resolution logs:
+```
+[CWK] Sampler alias: 'Euler a' → 'euler_ancestral'
+[CWK] Sampler ++ fix: 'euler_ancestral_cfg++' → 'euler_ancestral_cfg_pp'
+[CWK] ⚠ Sampler 'unknown_sampler' not found — falling back to 'euler'
+```
+
 ---
 
 ## Outputs
@@ -130,8 +162,8 @@ Use the Model Browser to organize your collection:
 | MODEL | MODEL | Loaded model with RNG setting applied |
 | CLIP | CLIP | Embedded or external CLIP model with clip_skip applied |
 | VAE | VAE | Embedded or external VAE |
-| sampler_name | SAMPLER | Preset or override sampler |
-| scheduler | SCHEDULER | Preset or override scheduler |
+| sampler_name | SAMPLER | Preset or override sampler (with fallback resolution) |
+| scheduler | SCHEDULER | Preset or override scheduler (with fallback resolution) |
 | cfg | FLOAT | Preset or override CFG scale |
 | steps | INT | Preset or override step count |
 | width | INT | Preset or override width |
@@ -184,16 +216,32 @@ If smZNodes is also installed, the two systems coexist transparently — CWK sto
 
 ---
 
+## Sampler / Scheduler Fallback
+
+When a preset or CivitAI metadata contains a sampler or scheduler name that doesn't match the locally installed ComfyUI samplers, the node applies a multi-layer resolution strategy:
+
+1. **Alias table** — covers all common A1111 display names (`Euler a`, `DPM++ 2M`, `DPM++ SDE Karras`, etc.) and CivitAI-specific patterns (`euler_ancestral_cfg++` → `euler_ancestral_cfg_pp`)
+2. **Pattern normalisation** — `++` → `_pp` substitution, space-to-underscore, case folding
+3. **Embedded scheduler extraction** — splits "DPM++ 2M SDE Karras" into sampler `dpmpp_2m_sde` + scheduler `karras`
+4. **Fuzzy matching** — `difflib.SequenceMatcher` with substring containment bonus (threshold 0.6)
+5. **Safe fallback** — `euler` for samplers, `simple` for schedulers
+
+This runs at two points:
+- **Execution time** — `resolve_sampler_scheduler()` is called in the node's `execute()` method before passing values to the output pins
+- **Preset auto-population** — `resolve_sampler()` and `resolve_scheduler()` are called in `server.py` when writing presets from CivitAI image metadata, so stored presets always contain valid names
+
+---
+
 ## File Structure
 
 ```
 CWK_Checkpoints_Preset_Manager/
 ├── __init__.py                 # ComfyUI entry point — registers nodes and routes
-├── nodes.py                    # Node definition, preset helpers, CLIP/VAE/RNG loaders
+├── nodes.py                    # Node definition, preset helpers, sampler/scheduler fallback, CLIP/VAE/RNG loaders
 ├── cwk_rng_shared.py           # Self-contained RNG options (smZ_opts protocol)
 ├── cwk_rng_philox.py           # Vendored Philox 4×32 NVidia-compatible RNG
 ├── cwk_rng.py                  # prepare_noise, TorchHijack, k-diffusion hijacking
-├── server.py                   # Aiohttp REST/SSE routes and CivitAI integration
+├── server.py                   # Aiohttp REST/SSE routes, CivitAI integration, preset auto-population
 ├── checkpoint_presets.json     # Per-model presets (auto-generated, not tracked)
 ├── hash_cache.json             # SHA-256 hash cache for model files (auto-generated)
 ├── model_metadata/             # Per-model CivitAI metadata cache (auto-generated)
@@ -203,7 +251,7 @@ CWK_Checkpoints_Preset_Manager/
 │   ├── cwk_panel.js            # Model Browser panel with grid, sidebar, and management
 │   ├── cwk_styles.js           # CSS injection for panel and components
 │   ├── cwk_context_menu.js     # Right-click context menu, image picker, version checker
-│   └── cwk_model_info.js       # Model Info overlay modal
+│   └── cwk_model_info.js       # Model Info overlay modal with image metadata viewer
 ├── CHANGELOG.md
 ├── LICENSE.txt
 └── README.md

@@ -13,7 +13,11 @@ import aiohttp
 from aiohttp import web
 
 import folder_paths
-from .nodes import load_presets, save_presets, default_preset, get_clip_list, get_vae_list
+from .nodes import (
+    load_presets, save_presets, default_preset,
+    get_clip_list, get_vae_list,
+    resolve_sampler, resolve_scheduler,
+)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -322,6 +326,114 @@ def _keep_manual_overrides(new_info: dict, existing: dict) -> dict:
     return new_info
 
 
+# ─── Preset auto-population from CivitAI image metadata ───────────────────────
+
+_PRESET_META_KEYS = ["sampler", "scheduler", "cfgScale", "steps", "clipSkip"]
+_PRESET_SIZE_KEYS = ["Size", "size"]
+
+
+def _extract_best_image_metadata(images: list) -> dict:
+    """
+    Pick the example image with the most generation metadata available
+    and return a preset-compatible dict.
+    """
+    if not images:
+        return {}
+
+    best_img  = None
+    best_count = 0
+
+    for img in images:
+        meta = img.get("meta") or img.get("metadata") or {}
+        if not meta or not isinstance(meta, dict):
+            continue
+        count = sum(1 for k in _PRESET_META_KEYS if meta.get(k) is not None)
+        # Also count size
+        for sk in _PRESET_SIZE_KEYS:
+            if meta.get(sk):
+                count += 1
+                break
+        if count > best_count:
+            best_count = count
+            best_img = meta
+
+    if not best_img or best_count == 0:
+        return {}
+
+    preset = {}
+
+    # Sampler — resolve through fallback system
+    raw_sampler = best_img.get("sampler")
+    if raw_sampler and isinstance(raw_sampler, str) and raw_sampler.strip():
+        preset["sampler_name"] = resolve_sampler(raw_sampler.strip())
+
+    # Scheduler — resolve through fallback system
+    raw_scheduler = best_img.get("scheduler")
+    if raw_scheduler and isinstance(raw_scheduler, str) and raw_scheduler.strip():
+        preset["scheduler"] = resolve_scheduler(raw_scheduler.strip())
+
+    # CFG
+    cfg_val = best_img.get("cfgScale")
+    if cfg_val is not None:
+        try:
+            preset["cfg"] = round(float(cfg_val), 2)
+        except (ValueError, TypeError):
+            pass
+
+    # Steps
+    steps_val = best_img.get("steps")
+    if steps_val is not None:
+        try:
+            preset["steps"] = int(steps_val)
+        except (ValueError, TypeError):
+            pass
+
+    # Clip skip
+    clip_val = best_img.get("clipSkip")
+    if clip_val is not None:
+        try:
+            cs = int(clip_val)
+            preset["clip_skip"] = -cs if cs > 0 else cs
+        except (ValueError, TypeError):
+            pass
+
+    # Resolution from "Size" field (e.g. "832x1216")
+    for sk in _PRESET_SIZE_KEYS:
+        size_str = best_img.get(sk)
+        if size_str and isinstance(size_str, str) and "x" in size_str.lower():
+            parts = size_str.lower().split("x")
+            if len(parts) == 2:
+                try:
+                    w = int(parts[0].strip())
+                    h = int(parts[1].strip())
+                    if 64 <= w <= 8192 and 64 <= h <= 8192:
+                        preset["width"]  = w
+                        preset["height"] = h
+                except (ValueError, TypeError):
+                    pass
+            break
+
+    return preset
+
+
+def _auto_populate_preset(model_name: str, images: list) -> bool:
+    """
+    Extract generation metadata from CivitAI example images and save
+    as a preset for the model. Returns True if a preset was written.
+    """
+    extracted = _extract_best_image_metadata(images)
+    if not extracted:
+        return False
+
+    presets  = load_presets()
+    existing = presets.get(model_name, default_preset())
+    existing.update(extracted)
+    presets[model_name] = existing
+    save_presets(presets)
+    print(f"[CWK] Auto-populated preset for {model_name}: {extracted}")
+    return True
+
+
 # ─── SSE helper ───────────────────────────────────────────────────────────────
 
 async def _sse(resp: web.StreamResponse, payload: dict) -> None:
@@ -444,6 +556,7 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
     sem         = asyncio.Semaphore(_CONCURRENCY)
     completed   = [0]
     auth_failed = [False]
+    presets_populated = [0]
 
     try:
         async with aiohttp.ClientSession(headers=_headers(api_key)) as session:
@@ -456,6 +569,14 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
 
                 if not force and not rebuild and existing.get("thumbnail"):
                     completed[0] += 1
+                    # Even for cached models, try to auto-populate preset if
+                    # the model doesn't have one yet
+                    images = existing.get("images", [])
+                    if images:
+                        current_presets = load_presets()
+                        if name not in current_presets:
+                            if _auto_populate_preset(name, images):
+                                presets_populated[0] += 1
                     await _sse(resp, {
                         "model": name, "info": existing,
                         "index": completed[0], "total": total,
@@ -483,6 +604,13 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
 
                 info = _keep_manual_overrides(info, existing)
                 _save_meta(name, info)
+
+                # Auto-populate preset from example images
+                images = info.get("images", [])
+                if images:
+                    if _auto_populate_preset(name, images):
+                        presets_populated[0] += 1
+
                 completed[0] += 1
                 await _sse(resp, {
                     "model": name, "info": info,
@@ -497,7 +625,10 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
 
     # Always send the terminal done event and close cleanly
     if not auth_failed[0]:
-        await _sse(resp, {"done": True, "total": total})
+        await _sse(resp, {
+            "done": True, "total": total,
+            "presets_populated": presets_populated[0],
+        })
 
     try:
         await resp.write_eof()
@@ -790,7 +921,17 @@ async def handle_refresh_civitai(req: web.Request) -> web.Response:
         existing = _load_meta(name)
         info     = _keep_manual_overrides(info, existing)
         _save_meta(name, info)
-        return web.json_response({"ok": True, "info": info})
+
+        # Auto-populate preset from example images
+        images = info.get("images", [])
+        preset_populated = False
+        if images:
+            preset_populated = _auto_populate_preset(name, images)
+
+        return web.json_response({
+            "ok": True, "info": info,
+            "preset_populated": preset_populated,
+        })
     except CivitAIAuthError as e:
         return web.json_response({"ok": False, "error": str(e)}, status=403)
     except Exception as e:
@@ -912,6 +1053,12 @@ async def handle_download_version(req: web.Request) -> web.StreamResponse:
                             registered_name = rel
                             break
                 _save_meta(registered_name, info)
+
+                # Auto-populate preset for the newly downloaded model
+                images = info.get("images", [])
+                if images:
+                    _auto_populate_preset(registered_name, images)
+
                 await _sse(resp, {"progress": 100, "done": True, "civitai": info, "registered_name": registered_name})
             else:
                 await _sse(resp, {"progress": 100, "done": True})
