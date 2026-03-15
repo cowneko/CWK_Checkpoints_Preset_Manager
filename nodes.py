@@ -4,7 +4,7 @@ CWK Checkpoints Preset Manager — ComfyUI node definitions.
 Single node: CWK_ModelPresetManager
   - Loads a checkpoint or diffusion model
   - Merges stored preset with optional per-execution overrides
-  - Outputs: MODEL, CLIP, VAE, steps, cfg, sampler_name, scheduler, width, height
+  - Outputs: MODEL, CLIP, VAE, LATENT, steps, cfg, sampler_name, scheduler, width, height
   - Applies clip_skip and rng internally
   - Supports external CLIP and VAE override (or embedded from checkpoint)
 """
@@ -15,14 +15,75 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
+import torch
 import folder_paths
 import comfy.samplers
 import comfy.sd
 
 # ─── Preset file path ─────────────────────────────────────────────────────────
 
-_NODE_DIR     = os.path.dirname(__file__)
-_PRESETS_FILE = os.path.join(_NODE_DIR, "checkpoint_presets.json")
+_NODE_DIR          = os.path.dirname(__file__)
+_PRESETS_FILE      = os.path.join(_NODE_DIR, "checkpoint_presets.json")
+_LAST_MODEL_FILE   = os.path.join(_NODE_DIR, "last_used_model.json")
+
+
+# ─── Last-used model persistence ───────────────────────────────────────────────
+
+def get_last_used_model() -> Optional[str]:
+    """Return the last-used model name, or None."""
+    if os.path.exists(_LAST_MODEL_FILE):
+        try:
+            with open(_LAST_MODEL_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("model_name")
+        except Exception:
+            pass
+    return None
+
+
+def save_last_used_model(model_name: str) -> None:
+    """Persist the last-used model name to disk."""
+    try:
+        with open(_LAST_MODEL_FILE, "w", encoding="utf-8") as f:
+            json.dump({"model_name": model_name}, f)
+    except Exception as e:
+        print(f"[CWK_PresetManager] Error saving last model: {e}")
+
+
+# ─── Resolution presets ────────────────────────────────────────────────────────
+
+RESOLUTION_PRESETS: Dict[str, Tuple[int, int]] = {
+    # ── Custom / passthrough ──
+    "(preset)":               (0, 0),
+    # ── SDXL / SD3 / Pony (1024px base) ──
+    "SDXL 1:1  (1024×1024)":  (1024, 1024),
+    "SDXL 3:4  (896×1152)":   (896,  1152),
+    "SDXL 4:3  (1152×896)":   (1152, 896),
+    "SDXL 2:3  (832×1216)":   (832,  1216),
+    "SDXL 3:2  (1216×832)":   (1216, 832),
+    "SDXL 9:16 (768×1344)":   (768,  1344),
+    "SDXL 16:9 (1344×768)":   (1344, 768),
+    "SDXL 9:21 (640×1536)":   (640,  1536),
+    "SDXL 21:9 (1536×640)":   (1536, 640),
+    # ── SD 1.5 (512px base) ──
+    "SD1.5 1:1  (512×512)":   (512,  512),
+    "SD1.5 3:4  (448×576)":   (448,  576),
+    "SD1.5 4:3  (576×448)":   (576,  448),
+    "SD1.5 2:3  (416×608)":   (416,  608),
+    "SD1.5 3:2  (608×416)":   (608,  416),
+    "SD1.5 9:16 (384×672)":   (384,  672),
+    "SD1.5 16:9 (672×384)":   (672,  384),
+    # ── Flux / Large models (1024+ base) ──
+    "Flux 1:1  (1024×1024)":  (1024, 1024),
+    "Flux 3:4  (896×1152)":   (896,  1152),
+    "Flux 4:3  (1152×896)":   (1152, 896),
+    "Flux 2:3  (832×1216)":   (832,  1216),
+    "Flux 3:2  (1216×832)":   (1216, 832),
+    "Flux 9:16 (768×1344)":   (768,  1344),
+    "Flux 16:9 (1344×768)":   (1344, 768),
+}
+
+RESOLUTION_PRESET_NAMES = list(RESOLUTION_PRESETS.keys())
 
 
 # ─── Public helpers (re-used by server.py) ────────────────────────────────────
@@ -171,9 +232,7 @@ def _fuzzy_match(name: str, candidates: List[str], threshold: float = 0.6) -> Op
     best_match = None
     for c in candidates:
         c_stripped = _strip_for_fuzzy(c)
-        # Try both SequenceMatcher and substring containment
         score = SequenceMatcher(None, stripped, c_stripped).ratio()
-        # Bonus: if one is a substring of the other, boost the score
         if stripped in c_stripped or c_stripped in stripped:
             score = max(score, 0.8)
         if score > best_score:
@@ -185,103 +244,56 @@ def _fuzzy_match(name: str, candidates: List[str], threshold: float = 0.6) -> Op
 
 
 def resolve_sampler(name: str, available: Optional[List[str]] = None) -> str:
-    """
-    Resolve a sampler name to a valid ComfyUI sampler.
-
-    Strategy:
-      1. Exact match in available list
-      2. Alias table lookup
-      3. ++ → _pp substitution then re-check
-      4. Fuzzy match
-      5. Fallback to 'euler'
-
-    Returns the resolved sampler name and prints a warning if fallback was used.
-    """
     if available is None:
         available = list(comfy.samplers.KSampler.SAMPLERS)
-
     if not name or not available:
         fb = available[0] if available else "euler"
         return fb
-
-    # 1) Exact match
     if name in available:
         return name
-
-    # 2) Alias table
     normed = _normalise(name)
     alias = _SAMPLER_ALIASES.get(normed)
     if alias and alias in available:
         print(f"[CWK] Sampler alias: '{name}' → '{alias}'")
         return alias
-
-    # 3) ++ → _pp substitution (common CivitAI pattern)
     pp_sub = name.replace("++", "_pp").replace(" ", "_").lower()
     if pp_sub in available:
         print(f"[CWK] Sampler ++ fix: '{name}' → '{pp_sub}'")
         return pp_sub
-
-    # 3b) Also try normalising: lowercase, replace spaces with underscores
     underscore = _normalise(name).replace(" ", "_").replace("++", "_pp")
     if underscore in available:
         print(f"[CWK] Sampler normalised: '{name}' → '{underscore}'")
         return underscore
-
-    # 4) Fuzzy match
     fuzzy = _fuzzy_match(name, available)
     if fuzzy:
         print(f"[CWK] Sampler fuzzy match: '{name}' → '{fuzzy}'")
         return fuzzy
-
-    # 5) Fallback
     fallback = "euler" if "euler" in available else available[0]
     print(f"[CWK] ⚠ Sampler '{name}' not found — falling back to '{fallback}'")
     return fallback
 
 
 def resolve_scheduler(name: str, available: Optional[List[str]] = None) -> str:
-    """
-    Resolve a scheduler name to a valid ComfyUI scheduler.
-
-    Strategy:
-      1. Exact match in available list
-      2. Alias table lookup
-      3. Fuzzy match
-      4. Fallback to 'simple'
-
-    Returns the resolved scheduler name and prints a warning if fallback was used.
-    """
     if available is None:
         available = list(comfy.samplers.KSampler.SCHEDULERS)
-
     if not name or not available:
         fb = available[0] if available else "simple"
         return fb
-
-    # 1) Exact match
     if name in available:
         return name
-
-    # 2) Alias table
     normed = _normalise(name)
     alias = _SCHEDULER_ALIASES.get(normed)
     if alias and alias in available:
         print(f"[CWK] Scheduler alias: '{name}' → '{alias}'")
         return alias
-
-    # 2b) Normalise: lowercase, replace spaces with underscores
     underscore = normed.replace(" ", "_")
     if underscore in available:
         print(f"[CWK] Scheduler normalised: '{name}' → '{underscore}'")
         return underscore
-
-    # 3) Fuzzy match
     fuzzy = _fuzzy_match(name, available)
     if fuzzy:
         print(f"[CWK] Scheduler fuzzy match: '{name}' → '{fuzzy}'")
         return fuzzy
-
-    # 4) Fallback
     fallback = "simple" if "simple" in available else available[0]
     print(f"[CWK] ⚠ Scheduler '{name}' not found — falling back to '{fallback}'")
     return fallback
@@ -293,81 +305,44 @@ def resolve_sampler_scheduler(
     available_samplers: Optional[List[str]] = None,
     available_schedulers: Optional[List[str]] = None,
 ) -> Tuple[str, str]:
-    """
-    Resolve both sampler and scheduler in one call.
-
-    Also handles the A1111 pattern where the scheduler is appended to the
-    sampler name (e.g. "DPM++ 2M Karras" → sampler="dpmpp_2m", scheduler="karras").
-    """
     if available_samplers is None:
         available_samplers = list(comfy.samplers.KSampler.SAMPLERS)
     if available_schedulers is None:
         available_schedulers = list(comfy.samplers.KSampler.SCHEDULERS)
-
-    # Check if sampler name contains an embedded scheduler (A1111 style)
-    # e.g. "DPM++ 2M SDE Karras" → sampler="DPM++ 2M SDE", scheduler hint="karras"
     normed_sampler = _normalise(sampler_name)
     scheduler_hint = None
     for sched_name in sorted(available_schedulers, key=len, reverse=True):
         sn_lower = sched_name.lower()
         if normed_sampler.endswith(" " + sn_lower):
-            # The sampler name has an embedded scheduler
             scheduler_hint = sched_name
-            # Strip the scheduler from the sampler name for alias lookup
             stripped = sampler_name[:-(len(sched_name))].strip()
             if stripped:
-                # Only use the stripped version if the alias table or available list
-                # can resolve it — otherwise keep the original
                 test = _SAMPLER_ALIASES.get(_normalise(stripped))
                 if test and test in available_samplers:
                     sampler_name = stripped
                 elif _normalise(stripped).replace(" ", "_").replace("++", "_pp") in available_samplers:
                     sampler_name = stripped
             break
-
     resolved_sampler = resolve_sampler(sampler_name, available_samplers)
-
-    # Use the embedded scheduler hint if the provided scheduler is empty or generic
     if scheduler_hint and (not scheduler or scheduler in ("normal", "simple")):
         scheduler = scheduler_hint
-
     resolved_scheduler = resolve_scheduler(scheduler, available_schedulers)
-
     return resolved_sampler, resolved_scheduler
 
 
 # ─── RNG application ──────────────────────────────────────────────────────────
 
 def _apply_rng(model, rng: str):
-    """
-    Apply cpu/gpu/nv RNG selection to the model.
-
-    Uses the self-contained CWK RNG subsystem (cwk_rng_shared / cwk_rng_philox
-    / cwk_rng) which is compatible with smZNodes' smZ_opts protocol.
-    If smZNodes is also installed, it will see the same key and work
-    transparently.
-
-    This patches comfy.sample.prepare_noise with our own implementation that:
-      - Supports cpu / gpu / nv (NVidia Philox) noise sources
-      - Hijacks k-diffusion's default_noise_sampler for consistent batch noise
-      - Reads options from model_options['smZ_opts'] via stack introspection
-    """
     from . import cwk_rng_shared, cwk_rng
-
     model = model.clone()
     model.model_options = dict(model.model_options)
-
-    # Store RNG options in model_options using the smZ_opts protocol
     opts = cwk_rng_shared.opts_default.clone()
     opts.randn_source = rng
     model.model_options[cwk_rng_shared.Options.KEY] = opts
-
-    # Patch comfy.sample.prepare_noise with our self-contained implementation
     import comfy.sample
     if not hasattr(comfy.sample, '_cwk_original_prepare_noise'):
         comfy.sample._cwk_original_prepare_noise = comfy.sample.prepare_noise
     comfy.sample.prepare_noise = cwk_rng.prepare_noise
-
     print(f"[CWK] RNG set: randn_source={rng}")
     return model
 
@@ -375,7 +350,6 @@ def _apply_rng(model, rng: str):
 # ─── External CLIP / VAE loaders ──────────────────────────────────────────────
 
 def _load_external_clip(clip_name: str):
-    """Load an external CLIP model by filename."""
     clip_path = folder_paths.get_full_path("clip", clip_name)
     if not clip_path:
         raise FileNotFoundError(f"[CWK] CLIP file not found: {clip_name}")
@@ -384,7 +358,6 @@ def _load_external_clip(clip_name: str):
 
 
 def _load_external_vae(vae_name: str):
-    """Load an external VAE model by filename."""
     vae_path = folder_paths.get_full_path("vae", vae_name)
     if not vae_path:
         raise FileNotFoundError(f"[CWK] VAE file not found: {vae_name}")
@@ -424,28 +397,30 @@ class CWK_ModelPresetManager:
                 "model_name": (all_models if all_models else [""], {}),
             },
             "optional": {
-                "override_sampler":   (samplers,),
-                "override_scheduler": (schedulers,),
-                "override_cfg":       ("FLOAT", {"default": 0.0, "min": 0.0,  "max": 30.0, "step": 0.1}),
-                "override_steps":     ("INT",   {"default": 0,   "min": 0,    "max": 200,  "step": 1}),
-                "override_clip_skip": ("INT",   {"default": 0,   "min": -24,  "max": 0,    "step": 1}),
-                "override_width":     ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
-                "override_height":    ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
-                "override_rng":       (["(preset)", "cpu", "gpu", "nv"],),
-                "override_vae_name":  (["(preset)"] + vae_list,),
-                "override_clip_name": (["(preset)"] + clip_list,),
+                "override_sampler":      (samplers,),
+                "override_scheduler":    (schedulers,),
+                "override_cfg":          ("FLOAT", {"default": 0.0, "min": 0.0,  "max": 30.0, "step": 0.1}),
+                "override_steps":        ("INT",   {"default": 0,   "min": 0,    "max": 200,  "step": 1}),
+                "override_clip_skip":    ("INT",   {"default": 0,   "min": -24,  "max": 0,    "step": 1}),
+                "override_width":        ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
+                "override_height":       ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
+                "override_rng":          (["(preset)", "cpu", "gpu", "nv"],),
+                "override_vae_name":     (["(preset)"] + vae_list,),
+                "override_clip_name":    (["(preset)"] + clip_list,),
+                "resolution_preset":     (RESOLUTION_PRESET_NAMES,),
+                "batch_size":            ("INT",   {"default": 1, "min": 1, "max": 64, "step": 1}),
             },
         }
 
     RETURN_TYPES = (
-        "MODEL", "CLIP", "VAE",
+        "MODEL", "CLIP", "VAE", "LATENT",
         "INT", "FLOAT",
         comfy.samplers.KSampler.SAMPLERS,
         comfy.samplers.KSampler.SCHEDULERS,
         "INT", "INT",
     )
     RETURN_NAMES = (
-        "MODEL", "CLIP", "VAE",
+        "MODEL", "CLIP", "VAE", "LATENT",
         "steps", "cfg",
         "sampler_name", "scheduler",
         "width", "height",
@@ -467,7 +442,12 @@ class CWK_ModelPresetManager:
         override_rng:       str   = "(preset)",
         override_clip_name: str   = "(preset)",
         override_vae_name:  str   = "(preset)",
+        resolution_preset:  str   = "(preset)",
+        batch_size:         int   = 1,
     ) -> Tuple:
+        # ── Save last-used model ───────────────────────────────────────────────
+        save_last_used_model(model_name)
+
         # ── Load the checkpoint / diffusion model ─────────────────────────────
         is_checkpoint = folder_paths.get_full_path("checkpoints", model_name) is not None
         is_diffusion  = (not is_checkpoint
@@ -481,7 +461,6 @@ class CWK_ModelPresetManager:
             loader           = CheckpointLoaderSimple()
             model, clip, vae = loader.load_checkpoint(model_name)
         else:
-            # Diffusion models (e.g. Flux, Wan, etc.) — no embedded CLIP/VAE
             diff_path = folder_paths.get_full_path("diffusion_models", model_name)
             model = comfy.sd.load_diffusion_model(diff_path)
             clip = None
@@ -501,6 +480,12 @@ class CWK_ModelPresetManager:
         rng          = override_rng            if override_rng        != "(preset)" else p["rng"]
         clip_name    = override_clip_name      if override_clip_name  != "(preset)" else p.get("clip_name", "embedded")
         vae_name     = override_vae_name       if override_vae_name   != "(preset)" else p.get("vae_name",  "embedded")
+
+        # ── Apply resolution preset (overrides width/height if not "(preset)") ─
+        if resolution_preset and resolution_preset != "(preset)":
+            res = RESOLUTION_PRESETS.get(resolution_preset)
+            if res and res[0] > 0 and res[1] > 0:
+                width, height = res
 
         # ── Resolve sampler / scheduler with fallback ─────────────────────────
         sampler_name, scheduler = resolve_sampler_scheduler(sampler_name, scheduler)
@@ -544,15 +529,21 @@ class CWK_ModelPresetManager:
         # ── Apply RNG ─────────────────────────────────────────────────────────
         model = _apply_rng(model, rng)
 
+        # ── Generate empty latent ─────────────────────────────────────────────
+        batch = max(1, batch_size)
+        latent = torch.zeros([batch, 4, height // 8, width // 8],
+                             device="cpu", dtype=torch.float32)
+
         print(
             f"[CWK] Loaded: {model_name} | "
             f"sampler={sampler_name} sched={scheduler} cfg={cfg} "
             f"steps={steps} clip_skip={clip_skip} "
             f"res={width}x{height} rng={rng} "
-            f"clip={clip_name} vae={vae_name}"
+            f"clip={clip_name} vae={vae_name} batch={batch}"
         )
 
-        return (model, clip, vae, steps, cfg, sampler_name, scheduler, width, height)
+        return (model, clip, vae, {"samples": latent},
+                steps, cfg, sampler_name, scheduler, width, height)
 
 
 # ─── Node mappings ────────────────────────────────────────────────────────────

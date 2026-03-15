@@ -17,6 +17,8 @@ from .nodes import (
     load_presets, save_presets, default_preset,
     get_clip_list, get_vae_list,
     resolve_sampler, resolve_scheduler,
+    get_last_used_model, save_last_used_model,
+    RESOLUTION_PRESETS,
 )
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -1087,7 +1089,42 @@ async def handle_download_version(req: web.Request) -> web.StreamResponse:
         pass
 
     return resp
+    
 
+async def handle_last_model(req: web.Request) -> web.Response:
+    """GET /cwk/last_model — Return the last-used model name and its preset + meta."""
+    model_name = get_last_used_model()
+    if not model_name:
+        return web.json_response({"model_name": None})
+    presets = load_presets()
+    preset  = presets.get(model_name, default_preset())
+    meta    = _load_meta(model_name)
+    return web.json_response({
+        "model_name": model_name,
+        "preset":     preset,
+        "meta":       meta if meta else None,
+    })
+
+
+async def handle_save_last_model(req: web.Request) -> web.Response:
+    """POST /cwk/last_model — Persist the last-used model name."""
+    try:
+        body = await req.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    model_name = body.get("model_name", "")
+    if not model_name:
+        return web.json_response({"error": "model_name required"}, status=400)
+    save_last_used_model(model_name)
+    return web.json_response({"ok": True})
+
+
+async def handle_resolution_presets(req: web.Request) -> web.Response:
+    """GET /cwk/resolution_presets — Return all resolution preset labels and values."""
+    result = []
+    for label, (w, h) in RESOLUTION_PRESETS.items():
+        result.append({"label": label, "width": w, "height": h})
+    return web.json_response(result)
 
 # ─── Route registration ───────────────────────────────────────────────────────
 
@@ -1117,4 +1154,7 @@ def register_routes(app: web.Application) -> None:
     r.add_get   ("/cwk/civitai/meta",                 handle_get_meta)
     r.add_get   ("/cwk/clips",                        handle_list_clips)
     r.add_get   ("/cwk/vaes",                         handle_list_vaes)
+    r.add_get   ("/cwk/last_model",                   handle_last_model)
+    r.add_post  ("/cwk/last_model",                   handle_save_last_model)
+    r.add_get   ("/cwk/resolution_presets",           handle_resolution_presets)    
     print("[CWK_PresetManager] Routes registered.")
