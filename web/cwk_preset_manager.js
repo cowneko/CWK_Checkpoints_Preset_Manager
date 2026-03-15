@@ -61,6 +61,10 @@ async function _loadResolutionPresets() {
   }
 }
 
+function rowByKey(key) {
+  return INFO_ROWS.find(r => r.key === key);
+}
+
 async function _loadSamplerOptions() {
   try {
     const res = await fetch("/object_info/CWK_ModelPresetManager");
@@ -69,13 +73,13 @@ async function _loadSamplerOptions() {
     const inputs = data?.CWK_ModelPresetManager?.input;
     const samplers   = (inputs?.optional?.override_sampler?.[0]   ?? []).filter(v => v !== "(preset)");
     const schedulers = (inputs?.optional?.override_scheduler?.[0] ?? []).filter(v => v !== "(preset)");
-    if (samplers.length)   { SAMPLERS   = samplers;   INFO_ROWS[0].options = samplers;   }
-    if (schedulers.length) { SCHEDULERS = schedulers; INFO_ROWS[1].options = schedulers; }
+    if (samplers.length)   { SAMPLERS   = samplers;   const r = rowByKey("sampler_name"); if (r) r.options = samplers;   }
+    if (schedulers.length) { SCHEDULERS = schedulers;  const r = rowByKey("scheduler");    if (r) r.options = schedulers; }
 
     const clips = (inputs?.optional?.override_clip_name?.[0] ?? []).filter(v => v !== "(preset)");
     const vaes  = (inputs?.optional?.override_vae_name?.[0]  ?? []).filter(v => v !== "(preset)");
-    if (clips.length) { CLIPS = clips; INFO_ROWS[8].options = clips; }
-    if (vaes.length)  { VAES  = vaes;  INFO_ROWS[9].options = vaes;  }
+    if (clips.length) { CLIPS = clips; const r = rowByKey("clip_name"); if (r) r.options = clips; }
+    if (vaes.length)  { VAES  = vaes;  const r = rowByKey("vae_name");  if (r) r.options = vaes;  }
   } catch (e) {
     console.warn("[CWK] Could not load sampler options from object_info:", e);
   }
@@ -89,11 +93,11 @@ async function _loadClipVaeOptions() {
     ]);
     if (clipRes.ok) {
       const { clips } = await clipRes.json();
-      if (clips?.length) { CLIPS = clips; INFO_ROWS[8].options = clips; }
+      if (clips?.length) { CLIPS = clips; const r = rowByKey("clip_name"); if (r) r.options = clips; }
     }
     if (vaeRes.ok) {
       const { vaes } = await vaeRes.json();
-      if (vaes?.length) { VAES = vaes; INFO_ROWS[9].options = vaes; }
+      if (vaes?.length) { VAES = vaes; const r = rowByKey("vae_name"); if (r) r.options = vaes; }
     }
   } catch (e) {
     console.warn("[CWK] Could not load CLIP/VAE lists:", e);
