@@ -6,6 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.6.0] — 2026-03-15
+
+### Added
+
+#### Last-Used Model Persistence
+- The node now **remembers the last loaded model** across page refreshes and ComfyUI restarts
+- On every execution and model load, the model name is saved to `last_used_model.json`
+- When a fresh node is created, it automatically restores the last-used model (with its preset, thumbnail, and metadata) after a short delay
+- New helper functions in `nodes.py`: `get_last_used_model()`, `save_last_used_model()`
+- New REST endpoints: `GET /cwk/last_model` (returns last model + preset + meta), `POST /cwk/last_model` (persists model name)
+
+#### Image Metadata Drag-and-Drop
+- **Drag an image with metadata onto the node** to automatically load the model that generated it
+- Supports **ComfyUI workflow metadata** embedded in PNG tEXt chunks — extracts the checkpoint name from `ckpt_name` or `model_name` fields in the prompt JSON
+- Supports **A1111-style metadata** — parses `Model: <name>` from EXIF/parameters text and fuzzy-matches it against installed checkpoints
+- Uses the new `handleFile` hook on the node to intercept dropped image files
+
+#### Resolution Preset Dropdown
+- New **Res Preset** dropdown row on the canvas node with all common resolutions for major model architectures:
+  - **SDXL / SD3 / Pony** — 1:1, 3:4, 4:3, 2:3, 3:2, 9:16, 16:9, 9:21, 21:9 (1024px base)
+  - **SD 1.5** — 1:1, 3:4, 4:3, 2:3, 3:2, 9:16, 16:9 (512px base)
+  - **Flux / Large models** — 1:1, 3:4, 4:3, 2:3, 3:2, 9:16, 16:9 (1024px base)
+- Selecting a preset **automatically populates the Width and Height** inline widgets on the node
+- Select `(preset)` to use the width/height from the model's saved preset instead
+- Resolution presets defined in `nodes.py` as `RESOLUTION_PRESETS` dict and served via `GET /cwk/resolution_presets`
+- Frontend fetches the preset list from the server at startup via `_loadResolutionPresets()`
+
+#### Batch Size & LATENT Output
+- New **Batch** inline widget on the canvas node (1–64, default 1) — controls the batch size for the empty latent output
+- New **LATENT** output pin — the node now generates an empty latent tensor (`torch.zeros([batch, 4, h//8, w//8])`) sized to the current width, height, and batch size
+- Node output count increased from 9 to **10** (`MODEL`, `CLIP`, `VAE`, `LATENT`, `steps`, `cfg`, `sampler_name`, `scheduler`, `width`, `height`)
+- `batch_size` is an optional input with `(preset)` passthrough — not saved as part of the per-model preset by default
+
+### Changed
+
+- `N_OUTPUTS` constant in frontend updated from 9 to 10 to account for the new LATENT output slot
+- `INFO_ROWS` array expanded with three new rows: `res_preset` (index 5), `batch_size` (index 8), and adjusted indices for existing rows
+- `_loadModelIntoNode()` helper function extracted to consolidate model loading logic (used by Load Model button, last-model restore, and image drag-and-drop)
+- Node `execute()` now calls `save_last_used_model()` on every run
+
+---
+
 ## [1.5.0] — 2026-03-14
 
 ### Added

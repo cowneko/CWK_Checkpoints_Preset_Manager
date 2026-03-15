@@ -11,13 +11,17 @@ A [ComfyUI](https://github.com/comfyanonymous/ComfyUI) custom node that combines
 - Model thumbnail displayed directly on the node with cover-fit crop and rounded corners
 - Inline editable preset rows with **◀ ▶** arrow buttons for stepping numeric values
 - Click the center value to open an **inline text input** directly over the value cell for direct numeric entry — Enter to commit, Escape to cancel, click outside to commit
-- Compact **listbox dropdowns** for list fields (Sampler, Scheduler, RNG, CLIP, VAE) — single-click to open, max 6 visible items with scroll, smart up/down positioning
+- Compact **listbox dropdowns** for list fields (Sampler, Scheduler, RNG, Resolution Preset, CLIP, VAE) — single-click to open, max 6 visible items with scroll, smart up/down positioning
 - Three action buttons: **📂 Load Model**, **↩ Reset**, **💾 Update Preset**
 - Node size auto-calculated based on content; minimum width enforced
+- **Last-used model persistence** — the node remembers the last loaded model and automatically restores it on page refresh or ComfyUI restart
+- **Image metadata drag-and-drop** — drag an image with embedded metadata onto the node to automatically load the model that generated it
 
 ### 💾 Per-Model Preset System
 - Save and load generation presets **per checkpoint model** — each model remembers its own settings
 - Preset fields: **Sampler**, **Scheduler**, **CFG**, **Steps**, **Clip Skip**, **Width**, **Height**, **RNG**, **CLIP**, **VAE**
+- **Resolution preset dropdown** — quickly set width and height from a list of common resolutions for SD 1.5, SDXL, and Flux models (square, landscape, and portrait aspects)
+- **Batch size control** — set batch size directly on the node (1–64); outputs an empty latent tensor sized to the current width, height, and batch
 - **Auto-populate presets from CivitAI** — when adding a new model or fetching thumbnails, the node extracts generation metadata (sampler, scheduler, CFG, steps, clip skip, resolution) from CivitAI example images and automatically saves them as the model's preset
 - Presets stored in `checkpoint_presets.json` and merged with per-execution widget overrides at runtime
 - **Clip skip** applied directly to the CLIP model via `clip.clip_layer()` — no extra node needed
@@ -118,34 +122,50 @@ Right-click the canvas → **Add Node** → **CWK / CWK Model Preset Manager**
 ### 2. Load a model
 Click **📂 Load Model** to open the Model Browser. Select a model card and click **Load Model**. The node will load the checkpoint and apply its saved preset (or defaults if no preset exists yet).
 
-### 3. Edit a preset
-On the node, click the **◀ ▶** arrows to step numeric values, or click the center value to type a number directly in the inline editor. Dropdown rows (Sampler, Scheduler, RNG, CLIP, VAE) open a compact listbox on single click. You can also edit presets from the sidebar in the Model Browser panel.
+> **Tip:** The node remembers the last model you used. When you add a new node or refresh the page, it will automatically restore the last loaded model with its preset and thumbnail.
 
-### 4. Save a preset
+### 3. Load a model from an image
+Drag an image with embedded generation metadata (ComfyUI workflow or A1111-style parameters) onto the node. The node will parse the metadata, identify the checkpoint model, and load it with its saved preset.
+
+### 4. Edit a preset
+On the node, click the **◀ ▶** arrows to step numeric values, or click the center value to type a number directly in the inline editor. Dropdown rows (Sampler, Scheduler, RNG, Resolution Preset, CLIP, VAE) open a compact listbox on single click. You can also edit presets from the sidebar in the Model Browser panel.
+
+### 5. Use resolution presets
+Use the **Res Preset** dropdown to quickly set width and height to a standard resolution. Presets are grouped by model architecture:
+- **SDXL / Pony / SD3** — 1024px base (1024×1024, 896×1152, 1344×768, etc.)
+- **SD 1.5** — 512px base (512×512, 448×576, 672×384, etc.)
+- **Flux** — 1024px base (same as SDXL)
+
+Select `(preset)` to use the width/height from the model's saved preset instead.
+
+### 6. Batch size & empty latent
+Use the **Batch** row to set the batch size (1–64). The node outputs an empty **LATENT** tensor sized to the current width × height × batch, ready to connect directly to a sampler — no separate Empty Latent Image node needed.
+
+### 7. Save a preset
 Click **💾 Update Preset** to save the current values as the preset for the loaded model. Next time you load this model, these settings will be restored automatically.
 
-### 5. Reset to preset
+### 8. Reset to preset
 Click **↩ Reset** to restore all values to the saved preset for the current model, discarding any unsaved changes.
 
-### 6. RNG modes
+### 9. RNG modes
 Use the **RNG** dropdown to select the noise generation source:
 - **cpu** — generate noise on CPU (default, deterministic across all GPUs)
 - **gpu** — generate noise on the active GPU (faster, but results may vary across different GPU models)
 - **nv** — NVidia Philox RNG (produces identical noise to `torch.randn(..., device='cuda')` but runs on CPU — enables cross-GPU reproducibility matching NVidia's CUDA RNG)
 
-### 7. External CLIP / VAE
+### 10. External CLIP / VAE
 Use the **CLIP** and **VAE** dropdowns on the node or in the Model Browser sidebar to select an external model file, or leave as `embedded` to use the checkpoint's built-in CLIP/VAE. If an external file fails to load, the node falls back to the embedded version with a console warning.
 
-### 8. Manage your models
+### 11. Manage your models
 Use the Model Browser to organize your collection:
 - **⭐ Star** your favorite models and toggle the favorites filter
 - **Right-click** any card for options: view model info, pick or set thumbnails, check for updates, refresh CivitAI data, or delete the model
 - **Check Updates** to see which models have newer versions on CivitAI, then download any version directly from the version checker
 
-### 9. View image metadata
+### 12. View image metadata
 In the Model Info overlay, click the **📋** button on any example image to view its generation metadata — prompts, sampler, scheduler, CFG, steps, clip skip, seed, and size. Use the **📋 Copy** buttons to copy prompts to the clipboard.
 
-### 10. Sampler / scheduler fallback
+### 13. Sampler / scheduler fallback
 If a preset or CivitAI metadata contains a sampler or scheduler name that isn't installed (e.g. A1111 naming like "Euler a" or "DPM++ 2M Karras"), the node automatically resolves it to the closest available match. If no close match exists, it falls back safely to `euler` / `simple`. Check the ComfyUI console for resolution logs:
 ```
 [CWK] Sampler alias: 'Euler a' → 'euler_ancestral'
@@ -162,14 +182,15 @@ If a preset or CivitAI metadata contains a sampler or scheduler name that isn't 
 | MODEL | MODEL | Loaded model with RNG setting applied |
 | CLIP | CLIP | Embedded or external CLIP model with clip_skip applied |
 | VAE | VAE | Embedded or external VAE |
+| LATENT | LATENT | Empty latent tensor sized to width × height × batch_size |
+| steps | INT | Preset or override step count |
+| cfg | FLOAT | Preset or override CFG scale |
 | sampler_name | SAMPLER | Preset or override sampler (with fallback resolution) |
 | scheduler | SCHEDULER | Preset or override scheduler (with fallback resolution) |
-| cfg | FLOAT | Preset or override CFG scale |
-| steps | INT | Preset or override step count |
 | width | INT | Preset or override width |
 | height | INT | Preset or override height |
 
-> `clip_skip`, `rng`, `clip_name`, and `vae_name` are applied internally and do not appear as output pins.
+> `clip_skip`, `rng`, `clip_name`, `vae_name`, and `batch_size` are applied internally and do not appear as separate output pins (batch_size is reflected in the LATENT tensor dimensions).
 
 ---
 
@@ -184,6 +205,9 @@ The node registers the following REST routes on the ComfyUI server:
 | POST | `/cwk/preset` | Save preset for a model |
 | GET | `/cwk/clips` | List available CLIP models (`embedded` + all files) |
 | GET | `/cwk/vaes` | List available VAE models (`embedded` + all files) |
+| GET | `/cwk/last_model` | Get the last-used model name with its preset and metadata |
+| POST | `/cwk/last_model` | Save the last-used model name |
+| GET | `/cwk/resolution_presets` | List all resolution preset labels with width/height values |
 | GET | `/cwk/civitai/meta` | Get cached CivitAI metadata for a model |
 | POST | `/cwk/civitai/fetch/stream` | SSE stream for bulk CivitAI metadata fetch |
 | POST | `/cwk/civitai/refresh` | Refresh CivitAI data for a single model |
@@ -237,17 +261,18 @@ This runs at two points:
 ```
 CWK_Checkpoints_Preset_Manager/
 ├── __init__.py                 # ComfyUI entry point — registers nodes and routes
-├── nodes.py                    # Node definition, preset helpers, sampler/scheduler fallback, CLIP/VAE/RNG loaders
+├── nodes.py                    # Node definition, preset helpers, sampler/scheduler fallback, CLIP/VAE/RNG loaders, resolution presets, last-model persistence
 ├── cwk_rng_shared.py           # Self-contained RNG options (smZ_opts protocol)
 ├── cwk_rng_philox.py           # Vendored Philox 4×32 NVidia-compatible RNG
 ├── cwk_rng.py                  # prepare_noise, TorchHijack, k-diffusion hijacking
 ├── server.py                   # Aiohttp REST/SSE routes, CivitAI integration, preset auto-population
 ├── checkpoint_presets.json     # Per-model presets (auto-generated, not tracked)
+├── last_used_model.json        # Last-used model name (auto-generated, not tracked)
 ├── hash_cache.json             # SHA-256 hash cache for model files (auto-generated)
 ├── model_metadata/             # Per-model CivitAI metadata cache (auto-generated)
 ├── local_thumbnails/           # User-uploaded local thumbnail files
 ├── web/
-│   ├── cwk_preset_manager.js   # Main node canvas extension and LiteGraph drawing
+│   ├── cwk_preset_manager.js   # Main node canvas extension, LiteGraph drawing, drag-and-drop handler
 │   ├── cwk_panel.js            # Model Browser panel with grid, sidebar, and management
 │   ├── cwk_styles.js           # CSS injection for panel and components
 │   ├── cwk_context_menu.js     # Right-click context menu, image picker, version checker
