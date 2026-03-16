@@ -12,7 +12,7 @@ const DEFAULTS = {
   sampler_name: "euler", scheduler: "normal",
   cfg: 7.0, steps: 20, clip_skip: -2,
   width: 1024, height: 1024, rng: "cpu",
-  clip_name: "embedded", vae_name: "embedded",
+  clip_name: "embedded", clip_type: "stable_diffusion", vae_name: "embedded",
 };
 
 const NSFW_R = 2;
@@ -228,6 +228,12 @@ export class ModelBrowserPanel {
             </select>
           </div>
           <div class="cwk-sidebar-section">
+            <div class="cwk-sidebar-title">CLIP Type:</div>
+            <select class="cwk-sidebar-input" id="sb-clip-type" disabled>
+              <option value="stable_diffusion">stable_diffusion</option>
+            </select>
+          </div>
+          <div class="cwk-sidebar-section">
             <div class="cwk-sidebar-title">VAE:</div>
             <select class="cwk-sidebar-input" id="sb-vae-name" disabled>
               <option value="embedded">embedded</option>
@@ -378,6 +384,8 @@ export class ModelBrowserPanel {
       const schedulers = (inputs?.optional?.override_scheduler?.[0] ?? []).filter(v => v !== "(preset)");
       this._fillSelect("sb-sampler",   samplers);
       this._fillSelect("sb-scheduler", schedulers);
+      const clipTypes = (inputs?.optional?.override_clip_type?.[0] ?? []).filter(v => v !== "(preset)");
+      if (clipTypes.length) this._fillSelect("sb-clip-type", clipTypes);
     } catch {
       this._fillSelect("sb-sampler",   ["euler","euler_ancestral","dpmpp_2m","dpmpp_sde","ddim"]);
       this._fillSelect("sb-scheduler", ["normal","karras","exponential","sgm_uniform","simple"]);
@@ -946,6 +954,7 @@ export class ModelBrowserPanel {
     this._setSelectValue("sb-scheduler", p.scheduler);
     this._setSelectValue("sb-rng",       p.rng ?? "cpu");
     this._setSelectValue("sb-clip-name", p.clip_name ?? "embedded");
+    this._setSelectValue("sb-clip-type", p.clip_type ?? "stable_diffusion");
     this._setSelectValue("sb-vae-name",  p.vae_name  ?? "embedded");
     this._setStatus(name);
   }
@@ -968,6 +977,7 @@ export class ModelBrowserPanel {
       width:        parseInt(document.getElementById("sb-width").value, 10),
       height:       parseInt(document.getElementById("sb-height").value, 10),
       clip_name:    document.getElementById("sb-clip-name").value,
+      clip_type:    document.getElementById("sb-clip-type").value,
       vae_name:     document.getElementById("sb-vae-name").value,
     };
   }
@@ -978,7 +988,7 @@ export class ModelBrowserPanel {
     this._editMode = on;
     for (const id of ["sb-sampler","sb-scheduler","sb-cfg","sb-steps",
                        "sb-clip-skip","sb-rng","sb-width","sb-height",
-                       "sb-clip-name","sb-vae-name"]) {
+                       "sb-clip-name","sb-clip-type","sb-vae-name"]) {
       const el = document.getElementById(id);
       if (el) el.disabled = !on;
     }
