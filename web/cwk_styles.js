@@ -166,7 +166,7 @@ export function injectStyles() {
     .cwk-sidebar {
       width:270px; flex-shrink:0; background:#181d2e;
       border-left:1px solid #2a2f45; padding:18px 16px;
-      overflow-y:auto; display:flex; flex-direction:column; gap:14px;
+      overflow-y:auto; display:flex; flex-direction:column; gap:6px;
       min-height:0;
     }
     .cwk-sidebar::-webkit-scrollbar { width:5px; }
@@ -192,7 +192,7 @@ export function injectStyles() {
     .cwk-sidebar-divider {
       border:none; border-top:1px solid #2a2f45; margin:4px 0;
     }
-    .cwk-sidebar-section { margin-bottom:10px; }
+    .cwk-sidebar-section { margin-bottom:4px; }
 
     /* ── Favourite filter checkbox ───────────────────────────────── */
     .cwk-favorite-filter {
