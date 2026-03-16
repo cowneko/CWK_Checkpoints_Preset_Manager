@@ -137,27 +137,41 @@ def _hash_cache_set(path: str, sha256: str) -> None:
 
 def _all_models() -> list:
     models = []
+    seen = set()
     for name in folder_paths.get_filename_list("checkpoints"):
-        models.append({"name": name, "type": "checkpoint"})
+        model_type = "gguf" if name.lower().endswith(".gguf") else "checkpoint"
+        models.append({"name": name, "type": model_type})
+        seen.add(name)
     try:
         for name in folder_paths.get_filename_list("diffusion_models"):
-            models.append({"name": name, "type": "diffusion_model"})
+            if name in seen:
+                continue
+            model_type = "gguf" if name.lower().endswith(".gguf") else "diffusion_model"
+            models.append({"name": name, "type": model_type})
+            seen.add(name)
+    except Exception:
+        pass
+    # Also include .gguf files from city96's "unet_gguf" folder type
+    try:
+        for name in folder_paths.get_filename_list("unet_gguf"):
+            if name in seen:
+                continue
+            models.append({"name": name, "type": "gguf"})
+            seen.add(name)
     except Exception:
         pass
     return models
 
 
-def _clean_name(filename: str) -> str:
-    return os.path.splitext(os.path.basename(filename))[0]
-
-
 def _full_path(model_name: str) -> Optional[str]:
-    result = (
-        folder_paths.get_full_path("checkpoints",      model_name) or
-        folder_paths.get_full_path("diffusion_models", model_name)
-    )
-    if result and os.path.exists(result):
-        return result
+    # Check all folder types including unet_gguf
+    for folder_type in ("checkpoints", "diffusion_models", "unet_gguf"):
+        try:
+            result = folder_paths.get_full_path(folder_type, model_name)
+            if result and os.path.exists(result):
+                return result
+        except Exception:
+            pass
 
     basename = os.path.basename(model_name)
     for folder_type in ("checkpoints", "diffusion_models"):
@@ -171,6 +185,9 @@ def _full_path(model_name: str) -> Optional[str]:
                     return os.path.join(dirpath, basename)
     return None
 
+def _clean_name(filename: str) -> str:
+    return os.path.splitext(os.path.basename(filename))[0]
+
 
 def _model_save_dir(model_name: str) -> str:
     p = _full_path(model_name)
@@ -179,11 +196,10 @@ def _model_save_dir(model_name: str) -> str:
     dirs = folder_paths.get_folder_paths("checkpoints")
     return dirs[0] if dirs else os.getcwd()
 
-
 def _bust_folder_cache() -> None:
     """Force ComfyUI to rescan model folders on the next list request."""
     try:
-        for folder_type in ("checkpoints", "diffusion_models"):
+        for folder_type in ("checkpoints", "diffusion_models", "unet_gguf"):
             folder_paths.filename_list_cache.pop(folder_type, None)
     except Exception as e:
         print(f"[CWK] Warning: could not bust folder_paths cache: {e}")

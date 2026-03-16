@@ -24,7 +24,6 @@ const ARROW_W     = 20;
 
 const TITLE_H   = () => LiteGraph.NODE_TITLE_HEIGHT ?? 30;
 const SLOT_H    = () => LiteGraph.NODE_SLOT_HEIGHT  ?? 20;
-// ── CHANGED: 10 outputs now (added LATENT) ──
 const N_OUTPUTS = 10;
 
 function getSlotsBottom() {
@@ -38,11 +37,33 @@ let SAMPLERS   = ["euler","euler_ancestral","dpmpp_2m","dpmpp_2m_sde",
 let SCHEDULERS = ["normal","karras","exponential","sgm_uniform","simple","beta"];
 const RNGS     = ["cpu","gpu", "nv"];
 let CLIPS      = ["embedded"];
+let CLIP_TYPES = ["stable_diffusion"];
 let VAES       = ["embedded"];
 
-// ── NEW: Resolution presets list (fetched from server on startup) ─────────────
 let RES_PRESETS = ["(preset)"];
-let RES_PRESETS_MAP = {};  // label → {width, height}
+let RES_PRESETS_MAP = {};
+
+function rowByKey(key) {
+  return INFO_ROWS.find(r => r.key === key);
+}
+
+const INFO_ROWS = [
+  { key: "sampler_name", label: "Sampler",    widget: "override_sampler",    type: "list",  options: SAMPLERS    },  // 0
+  { key: "scheduler",    label: "Scheduler",  widget: "override_scheduler",  type: "list",  options: SCHEDULERS  },  // 1
+  { key: "cfg",          label: "CFG",        widget: "override_cfg",        type: "float", min: 0,   max: 30    },  // 2
+  { key: "steps",        label: "Steps",      widget: "override_steps",      type: "int",   min: 1,   max: 200   },  // 3
+  { key: "clip_skip",    label: "Clip skip",  widget: "override_clip_skip",  type: "int",   min: -24, max: -1    },  // 4
+  { key: "res_preset",   label: "Res Preset", widget: "resolution_preset",   type: "list",  options: RES_PRESETS  },  // 5
+  { key: "width",        label: "Width",      widget: "override_width",      type: "int",   min: 64,  max: 8192  },  // 6
+  { key: "height",       label: "Height",     widget: "override_height",     type: "int",   min: 64,  max: 8192  },  // 7
+  { key: "batch_size",   label: "Batch",      widget: "batch_size",          type: "int",   min: 1,   max: 64    },  // 8
+  { key: "rng",          label: "RNG",        widget: "override_rng",        type: "list",  options: RNGS        },  // 9
+  { key: "clip_name",    label: "CLIP",       widget: "override_clip_name",  type: "list",  options: CLIPS       },  // 10
+  { key: "clip_type",    label: "Clip Type",  widget: "override_clip_type",  type: "list",  options: CLIP_TYPES  },  // 11
+  { key: "vae_name",     label: "VAE",        widget: "override_vae_name",   type: "list",  options: VAES        },  // 12
+];
+
+// ─── Async data loaders (single definitions, no duplicates) ───────────────────
 
 async function _loadResolutionPresets() {
   try {
@@ -55,14 +76,12 @@ async function _loadResolutionPresets() {
       for (const d of data) {
         RES_PRESETS_MAP[d.label] = { width: d.width, height: d.height };
       }
+      const resRow = rowByKey("res_preset");
+      if (resRow) resRow.options = RES_PRESETS;
     }
   } catch (e) {
     console.warn("[CWK] Could not load resolution presets:", e);
   }
-}
-
-function rowByKey(key) {
-  return INFO_ROWS.find(r => r.key === key);
 }
 
 async function _loadSamplerOptions() {
@@ -71,6 +90,7 @@ async function _loadSamplerOptions() {
     if (!res.ok) return;
     const data = await res.json();
     const inputs = data?.CWK_ModelPresetManager?.input;
+
     const samplers   = (inputs?.optional?.override_sampler?.[0]   ?? []).filter(v => v !== "(preset)");
     const schedulers = (inputs?.optional?.override_scheduler?.[0] ?? []).filter(v => v !== "(preset)");
     if (samplers.length)   { SAMPLERS   = samplers;   const r = rowByKey("sampler_name"); if (r) r.options = samplers;   }
@@ -80,6 +100,9 @@ async function _loadSamplerOptions() {
     const vaes  = (inputs?.optional?.override_vae_name?.[0]  ?? []).filter(v => v !== "(preset)");
     if (clips.length) { CLIPS = clips; const r = rowByKey("clip_name"); if (r) r.options = clips; }
     if (vaes.length)  { VAES  = vaes;  const r = rowByKey("vae_name");  if (r) r.options = vaes;  }
+
+    const clipTypes = (inputs?.optional?.override_clip_type?.[0] ?? []).filter(v => v !== "(preset)");
+    if (clipTypes.length) { CLIP_TYPES = clipTypes; const r = rowByKey("clip_type"); if (r) r.options = clipTypes; }
   } catch (e) {
     console.warn("[CWK] Could not load sampler options from object_info:", e);
   }
@@ -104,30 +127,10 @@ async function _loadClipVaeOptions() {
   }
 }
 
-const INFO_ROWS = [
-  { key: "sampler_name", label: "Sampler",    widget: "override_sampler",   type: "list",  options: SAMPLERS   },
-  { key: "scheduler",    label: "Scheduler",  widget: "override_scheduler", type: "list",  options: SCHEDULERS },
-  { key: "cfg",          label: "CFG",        widget: "override_cfg",       type: "float", min: 0,   max: 30   },
-  { key: "steps",        label: "Steps",      widget: "override_steps",     type: "int",   min: 1,   max: 200  },
-  { key: "clip_skip",    label: "Clip skip",  widget: "override_clip_skip", type: "int",   min: -24, max: -1   },
-  // ── NEW: Resolution preset row (index 5) ──
-  { key: "res_preset",   label: "Res Preset", widget: "resolution_preset",  type: "list",  options: RES_PRESETS },
-  { key: "width",        label: "Width",      widget: "override_width",     type: "int",   min: 64,  max: 8192 },
-  { key: "height",       label: "Height",     widget: "override_height",    type: "int",   min: 64,  max: 8192 },
-  // ── NEW: Batch size row (index 8) ──
-  { key: "batch_size",   label: "Batch",      widget: "batch_size",         type: "int",   min: 1,   max: 64   },
-  { key: "rng",          label: "RNG",        widget: "override_rng",       type: "list",  options: RNGS       },
-  { key: "clip_name",    label: "CLIP",       widget: "override_clip_name", type: "list",  options: CLIPS      },
-  { key: "vae_name",     label: "VAE",        widget: "override_vae_name",  type: "list",  options: VAES       },
-];
-
+// ─── Fire all loaders once ────────────────────────────────────────────────────
 _loadSamplerOptions();
 _loadClipVaeOptions();
-_loadResolutionPresets().then(() => {
-  // Update the res_preset row options once fetched
-  const resRow = INFO_ROWS.find(r => r.key === "res_preset");
-  if (resRow) resRow.options = RES_PRESETS;
-});
+_loadResolutionPresets();
 
 const BTNS = [
   { label: "📂 Load Model",    key: "load"   },
@@ -535,18 +538,23 @@ async function _loadModelIntoNode(node, modelName) {
       if (node._cwkPreset.batch_size == null) node._cwkPreset.batch_size = 1;
       // Also set res_preset display
       if (node._cwkPreset.res_preset == null) node._cwkPreset.res_preset = "(preset)";
+      if (node._cwkPreset.clip_type == null) node._cwkPreset.clip_type = "stable_diffusion";	  
       const map = {
         override_sampler:   preset.sampler_name,
         override_scheduler: preset.scheduler,
         override_cfg:       preset.cfg,
         override_steps:     preset.steps,
         override_clip_skip: preset.clip_skip,
+        resolution_preset:  "(preset)",
         override_width:     preset.width,
         override_height:    preset.height,
+        batch_size:         preset.batch_size ?? 1,
         override_rng:       preset.rng,
         override_clip_name: preset.clip_name,
+        override_clip_type: preset.clip_type,
         override_vae_name:  preset.vae_name,
       };
+
       for (const [wn, val] of Object.entries(map)) {
         const w = getW(wn);
         if (w && val !== undefined) { w.value = val; w.callback?.(val); }
@@ -584,6 +592,15 @@ app.registerExtension({
           w.type = "hidden"; w.hidden = true;
           w.computeSize = () => [0, -4];
         }
+        // ── Ensure all combo widgets start with valid defaults ──
+        const getW = name => node.widgets?.find(w => w.name === name);
+        const rp = getW("resolution_preset");
+        if (rp) rp.value = "(preset)";
+        const bs = getW("batch_size");
+        if (bs) bs.value = 1;
+        const ct = getW("override_clip_type");
+        if (ct) ct.value = "(preset)";
+
         node.size[0] = Math.max(node.size[0], NODE_MIN_W);
         node.size[1] = calcNodeHeight(node);
         app.canvas.setDirty(true, true);
@@ -775,10 +792,13 @@ function handleButtonClick(node, key) {
           override_cfg:       preset.cfg          ?? 0,
           override_steps:     preset.steps        ?? 0,
           override_clip_skip: preset.clip_skip    ?? 0,
+          resolution_preset:  "(preset)",
           override_width:     preset.width        ?? 0,
           override_height:    preset.height       ?? 0,
+          batch_size:         preset.batch_size   ?? 1,
           override_rng:       preset.rng          ?? "(preset)",
           override_clip_name: preset.clip_name    ?? "(preset)",
+          override_clip_type: preset.clip_type    ?? "(preset)",
           override_vae_name:  preset.vae_name     ?? "(preset)",
         };
         for (const [wn, val] of Object.entries(map)) {
@@ -805,6 +825,7 @@ function handleButtonClick(node, key) {
     if (p.height   != null && Number(p.height)    !== 0) preset.height       = Number(p.height);
     if (p.rng      && p.rng !== "(preset)")               preset.rng          = p.rng;
     if (p.clip_name)                                      preset.clip_name    = p.clip_name;
+	if (p.clip_type && p.clip_type !== "(preset)")        preset.clip_type    = p.clip_type;
     if (p.vae_name)                                       preset.vae_name     = p.vae_name;
     apiFetch("/cwk/preset", {
       method: "POST",

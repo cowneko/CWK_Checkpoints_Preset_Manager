@@ -90,11 +90,32 @@ RESOLUTION_PRESET_NAMES = list(RESOLUTION_PRESETS.keys())
 
 def get_clip_list():
     """Return list of available CLIP models with 'embedded' as first entry."""
+    clips = set()
     try:
-        clips = folder_paths.get_filename_list("clip")
+        clips.update(folder_paths.get_filename_list("clip"))
     except Exception:
-        clips = []
+        pass
+    # Also include city96's clip_gguf folder type
+    try:
+        clips.update(folder_paths.get_filename_list("clip_gguf"))
+    except Exception:
+        pass
     return ["embedded"] + sorted(clips)
+    
+    
+def _get_clip_types() -> list:
+    """Build list of available CLIPType values from comfy.sd.CLIPType enum."""
+    clip_types = []
+    try:
+        for attr in dir(comfy.sd.CLIPType):
+            if not attr.startswith("_"):
+                clip_types.append(attr.lower())
+    except Exception:
+        pass
+    if not clip_types:
+        clip_types = ["stable_diffusion", "stable_cascade", "sd3", "stable_audio", "flux", "flux2",
+                      "hunyuan_video", "mochi", "ltxv", "wan", "cosmos"]
+    return sorted(set(clip_types))    
 
 
 def get_vae_list():
@@ -120,6 +141,7 @@ def default_preset() -> Dict[str, Any]:
         "rng":          "cpu",
         "clip_name":    "embedded",
         "vae_name":     "embedded",
+        "clip_type":    "stable_diffusion",
     }
 
 
@@ -349,21 +371,167 @@ def _apply_rng(model, rng: str):
 
 # ─── External CLIP / VAE loaders ──────────────────────────────────────────────
 
-def _load_external_clip(clip_name: str):
-    clip_path = folder_paths.get_full_path("clip", clip_name)
+def _load_external_clip(clip_name: str, clip_type_str: str = "stable_diffusion"):
+    """Load an external CLIP model. Uses city96's CLIPLoaderGGUF for .gguf files,
+    otherwise ComfyUI's built-in CLIPLoader."""
+    import sys
+    import types
+
+    # Resolve path from any relevant folder type
+    clip_path = None
+    for folder_type in ("clip", "clip_gguf"):
+        try:
+            clip_path = folder_paths.get_full_path(folder_type, clip_name)
+            if clip_path and os.path.exists(clip_path):
+                break
+            clip_path = None
+        except Exception:
+            pass
     if not clip_path:
         raise FileNotFoundError(f"[CWK] CLIP file not found: {clip_name}")
-    clip = comfy.sd.load_clip(ckpt_paths=[clip_path], embedding_directory=folder_paths.get_folder_paths("embeddings"))
+
+    if clip_name.lower().endswith(".gguf"):
+        # ── Find CLIPLoaderGGUF from already-loaded modules ──────────────────
+        CLIPLoaderGGUF = None
+        for mod_name, mod in list(sys.modules.items()):
+            if mod is None or not isinstance(mod, types.ModuleType):
+                continue
+            if mod_name.startswith("torch") or mod_name.startswith("_"):
+                continue
+            try:
+                cls = getattr(mod, "CLIPLoaderGGUF", None)
+                if cls is not None and isinstance(cls, type) and hasattr(cls, "load_clip"):
+                    CLIPLoaderGGUF = cls
+                    break
+            except Exception:
+                continue
+
+        if CLIPLoaderGGUF is None:
+            raise RuntimeError(
+                f"[CWK] Cannot load GGUF CLIP '{clip_name}' — "
+                f"ComfyUI-GGUF (city96) is required. "
+                f"Install it from: https://github.com/city96/ComfyUI-GGUF"
+            )
+
+        try:
+            loader = CLIPLoaderGGUF()
+            (clip,) = loader.load_clip(clip_name, type=clip_type_str)
+            print(f"[CWK] GGUF CLIP loaded via ComfyUI-GGUF: {clip_name} (type={clip_type_str})")
+            return clip
+        except Exception as e:
+            raise RuntimeError(
+                f"[CWK] ComfyUI-GGUF found but failed to load CLIP '{clip_name}': {e}"
+            ) from e
+
+    # Standard CLIPLoader for non-GGUF files
+    from nodes import CLIPLoader
+    loader = CLIPLoader()
+    (clip,) = loader.load_clip(clip_name, type=clip_type_str)
     return clip
 
 
 def _load_external_vae(vae_name: str):
+    """Load an external VAE using ComfyUI's built-in VAELoader."""
     vae_path = folder_paths.get_full_path("vae", vae_name)
     if not vae_path:
         raise FileNotFoundError(f"[CWK] VAE file not found: {vae_name}")
-    sd = comfy.utils.load_torch_file(vae_path)
-    vae = comfy.sd.VAE(sd=sd)
-    return vae
+    try:
+        from nodes import VAELoader
+        loader = VAELoader()
+        (vae,) = loader.load_vae(vae_name)
+        return vae
+    except Exception as e:
+        print(f"[CWK] VAELoader failed for '{vae_name}': {e}")
+        # Fallback: try loading manually with safetensors detection
+        import safetensors.torch
+        if vae_path.endswith(".safetensors"):
+            sd = safetensors.torch.load_file(vae_path)
+        else:
+            sd = comfy.utils.load_torch_file(vae_path)
+        vae = comfy.sd.VAE(sd=sd)
+        return vae
+    
+
+# ─── GGUF detection helper ─────────────────────────────────────────────────────
+
+def _is_gguf(model_name: str) -> bool:
+    """Check if a model name points to a .gguf file."""
+    return model_name.lower().endswith(".gguf")
+
+
+def _get_gguf_models() -> list:
+    """Return list of .gguf model names from unet_gguf folder type (city96)
+    and from checkpoints/diffusion_models (if .gguf was registered there)."""
+    gguf_names = set()
+    # Source 1: city96's "unet_gguf" folder type (if ComfyUI-GGUF is installed)
+    try:
+        for name in folder_paths.get_filename_list("unet_gguf"):
+            gguf_names.add(name)
+    except Exception:
+        pass
+    # Source 2: .gguf files in standard folder types (from our __init__.py registration)
+    for folder_type in ("checkpoints", "diffusion_models"):
+        try:
+            for name in folder_paths.get_filename_list(folder_type):
+                if name.lower().endswith(".gguf"):
+                    gguf_names.add(name)
+        except Exception:
+            pass
+    return sorted(gguf_names)
+
+
+def _resolve_gguf_path(model_name: str) -> str:
+    """Find the absolute path for a .gguf model, checking all possible folder types."""
+    for folder_type in ("unet_gguf", "diffusion_models", "checkpoints"):
+        try:
+            p = folder_paths.get_full_path(folder_type, model_name)
+            if p and os.path.exists(p):
+                return p
+        except Exception:
+            pass
+    raise FileNotFoundError(f"[CWK] GGUF model file not found: {model_name}")
+
+
+def _load_gguf_model(model_name: str):
+    """Load a GGUF model. Requires city96/ComfyUI-GGUF.
+    Dynamically discovers the module name by scanning sys.modules."""
+    import sys
+    import types
+
+    # ── Find UnetLoaderGGUF from already-loaded modules ──────────────────────
+    UnetLoaderGGUF = None
+    for mod_name, mod in list(sys.modules.items()):
+        # Skip None, non-module objects, and torch internals
+        if mod is None or not isinstance(mod, types.ModuleType):
+            continue
+        if mod_name.startswith("torch") or mod_name.startswith("_"):
+            continue
+        try:
+            cls = getattr(mod, "UnetLoaderGGUF", None)
+            if cls is not None and isinstance(cls, type) and hasattr(cls, "load_unet"):
+                UnetLoaderGGUF = cls
+                print(f"[CWK] Found UnetLoaderGGUF in module: {mod_name}")
+                break
+        except Exception:
+            continue
+
+    if UnetLoaderGGUF is None:
+        raise RuntimeError(
+            f"[CWK] Cannot load GGUF model '{model_name}' — "
+            f"ComfyUI-GGUF (city96) is required but could not be found. "
+            f"Install it from: https://github.com/city96/ComfyUI-GGUF"
+        )
+
+    try:
+        loader = UnetLoaderGGUF()
+        (model,) = loader.load_unet(model_name)
+        print(f"[CWK] GGUF model loaded via ComfyUI-GGUF: {model_name}")
+        return model
+    except Exception as e:
+        raise RuntimeError(
+            f"[CWK] ComfyUI-GGUF found but failed to load '{model_name}': {e}\n"
+            f"Make sure the file is in your ComfyUI/models/unet or diffusion_models folder."
+        ) from e
 
 
 # ─── ComfyUI node ─────────────────────────────────────────────────────────────
@@ -384,31 +552,35 @@ class CWK_ModelPresetManager:
             diffusion = folder_paths.get_filename_list("diffusion_models")
         except Exception:
             diffusion = []
-        all_models = checkpoints + diffusion
+        gguf_models = _get_gguf_models()
+        all_models = sorted(set(checkpoints + diffusion + gguf_models))
 
         samplers   = ["(preset)"] + list(comfy.samplers.KSampler.SAMPLERS)
         schedulers = ["(preset)"] + list(comfy.samplers.KSampler.SCHEDULERS)
 
-        clip_list = get_clip_list()
-        vae_list  = get_vae_list()
+        clip_list  = get_clip_list()
+        vae_list   = get_vae_list()
+        clip_types = ["(preset)"] + _get_clip_types()
 
         return {
             "required": {
                 "model_name": (all_models if all_models else [""], {}),
             },
             "optional": {
-                "override_sampler":      (samplers,),
-                "override_scheduler":    (schedulers,),
-                "override_cfg":          ("FLOAT", {"default": 0.0, "min": 0.0,  "max": 30.0, "step": 0.1}),
-                "override_steps":        ("INT",   {"default": 0,   "min": 0,    "max": 200,  "step": 1}),
-                "override_clip_skip":    ("INT",   {"default": 0,   "min": -24,  "max": 0,    "step": 1}),
-                "override_width":        ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
-                "override_height":       ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),
-                "override_rng":          (["(preset)", "cpu", "gpu", "nv"],),
-                "override_vae_name":     (["(preset)"] + vae_list,),
-                "override_clip_name":    (["(preset)"] + clip_list,),
-                "resolution_preset":     (RESOLUTION_PRESET_NAMES,),
-                "batch_size":            ("INT",   {"default": 1, "min": 1, "max": 64, "step": 1}),
+                # ── Must match INFO_ROWS order in cwk_preset_manager.js exactly ──
+                "override_sampler":      (samplers,),                                  # 0  Sampler
+                "override_scheduler":    (schedulers,),                                # 1  Scheduler
+                "override_cfg":          ("FLOAT", {"default": 0.0, "min": 0.0,  "max": 30.0, "step": 0.1}),  # 2  CFG
+                "override_steps":        ("INT",   {"default": 0,   "min": 0,    "max": 200,  "step": 1}),    # 3  Steps
+                "override_clip_skip":    ("INT",   {"default": 0,   "min": -24,  "max": 0,    "step": 1}),    # 4  Clip skip
+                "resolution_preset":     (RESOLUTION_PRESET_NAMES,),                   # 5  Res Preset
+                "override_width":        ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),    # 6  Width
+                "override_height":       ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),    # 7  Height
+                "batch_size":            ("INT",   {"default": 1,   "min": 1,    "max": 64,   "step": 1}),    # 8  Batch
+                "override_rng":          (["(preset)", "cpu", "gpu", "nv"],),          # 9  RNG
+                "override_clip_name":    (["(preset)"] + clip_list,),                  # 10 CLIP
+                "override_clip_type":    (clip_types,),                                # 11 Clip Type  ← NEW
+                "override_vae_name":     (["(preset)"] + vae_list,),                   # 12 VAE
             },
         }
 
@@ -442,29 +614,35 @@ class CWK_ModelPresetManager:
         override_rng:       str   = "(preset)",
         override_clip_name: str   = "(preset)",
         override_vae_name:  str   = "(preset)",
+        override_clip_type: str   = "(preset)",
         resolution_preset:  str   = "(preset)",
         batch_size:         int   = 1,
     ) -> Tuple:
         # ── Save last-used model ───────────────────────────────────────────────
         save_last_used_model(model_name)
 
-        # ── Load the checkpoint / diffusion model ─────────────────────────────
-        is_checkpoint = folder_paths.get_full_path("checkpoints", model_name) is not None
-        is_diffusion  = (not is_checkpoint
+        # ── Load the checkpoint / diffusion model / GGUF ───────────────────────
+        is_gguf       = _is_gguf(model_name)
+        is_checkpoint = (not is_gguf
+                         and folder_paths.get_full_path("checkpoints", model_name) is not None)
+        is_diffusion  = (not is_checkpoint and not is_gguf
                          and folder_paths.get_full_path("diffusion_models", model_name) is not None)
 
-        if not is_checkpoint and not is_diffusion:
-            raise FileNotFoundError(f"[CWK] Model file not found: {model_name}")
-
-        if is_checkpoint:
+        if is_gguf:
+            model = _load_gguf_model(model_name)  # pass filename, not abs path
+            clip = None
+            vae  = None
+        elif is_checkpoint:
             from nodes import CheckpointLoaderSimple
             loader           = CheckpointLoaderSimple()
             model, clip, vae = loader.load_checkpoint(model_name)
-        else:
+        elif is_diffusion:
             diff_path = folder_paths.get_full_path("diffusion_models", model_name)
             model = comfy.sd.load_diffusion_model(diff_path)
             clip = None
             vae  = None
+        else:
+            raise FileNotFoundError(f"[CWK] Model file not found: {model_name}")
 
         # ── Merge preset + overrides ──────────────────────────────────────────
         presets = load_presets()
@@ -480,6 +658,7 @@ class CWK_ModelPresetManager:
         rng          = override_rng            if override_rng        != "(preset)" else p["rng"]
         clip_name    = override_clip_name      if override_clip_name  != "(preset)" else p.get("clip_name", "embedded")
         vae_name     = override_vae_name       if override_vae_name   != "(preset)" else p.get("vae_name",  "embedded")
+        clip_type    = override_clip_type      if override_clip_type  != "(preset)" else p.get("clip_type", "stable_diffusion")
 
         # ── Apply resolution preset (overrides width/height if not "(preset)") ─
         if resolution_preset and resolution_preset != "(preset)":
@@ -493,16 +672,16 @@ class CWK_ModelPresetManager:
         # ── Load external CLIP if needed ──────────────────────────────────────
         if clip_name and clip_name != "embedded":
             try:
-                clip = _load_external_clip(clip_name)
-                print(f"[CWK] External CLIP loaded: {clip_name}")
+                clip = _load_external_clip(clip_name, clip_type)
+                print(f"[CWK] External CLIP loaded: {clip_name} (type={clip_type})")
             except Exception as e:
                 print(f"[CWK] Warning: could not load external CLIP '{clip_name}': {e}")
                 if clip is None:
                     print(f"[CWK] No embedded CLIP available (diffusion model)")
                 else:
                     print(f"[CWK] Falling back to embedded CLIP")
-        elif clip is None and is_diffusion:
-            print(f"[CWK] Note: diffusion model has no embedded CLIP — set an external CLIP in the preset")
+        elif clip is None and (is_diffusion or is_gguf):
+            print(f"[CWK] Note: model has no embedded CLIP — set an external CLIP in the preset")
 
         # ── Load external VAE if needed ───────────────────────────────────────
         if vae_name and vae_name != "embedded":
@@ -539,7 +718,7 @@ class CWK_ModelPresetManager:
             f"sampler={sampler_name} sched={scheduler} cfg={cfg} "
             f"steps={steps} clip_skip={clip_skip} "
             f"res={width}x{height} rng={rng} "
-            f"clip={clip_name} vae={vae_name} batch={batch}"
+            f"clip={clip_name} clip_type={clip_type} vae={vae_name} batch={batch}"
         )
 
         return (model, clip, vae, {"samples": latent},

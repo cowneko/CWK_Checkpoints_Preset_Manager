@@ -11,7 +11,7 @@ A [ComfyUI](https://github.com/comfyanonymous/ComfyUI) custom node that combines
 - Model thumbnail displayed directly on the node with cover-fit crop and rounded corners
 - Inline editable preset rows with **◀ ▶** arrow buttons for stepping numeric values
 - Click the center value to open an **inline text input** directly over the value cell for direct numeric entry — Enter to commit, Escape to cancel, click outside to commit
-- Compact **listbox dropdowns** for list fields (Sampler, Scheduler, RNG, Resolution Preset, CLIP, VAE) — single-click to open, max 6 visible items with scroll, smart up/down positioning
+- Compact **listbox dropdowns** for list fields (Sampler, Scheduler, RNG, Resolution Preset, CLIP, Clip Type, VAE) — single-click to open, max 6 visible items with scroll, smart up/down positioning
 - Three action buttons: **📂 Load Model**, **↩ Reset**, **💾 Update Preset**
 - Node size auto-calculated based on content; minimum width enforced
 - **Last-used model persistence** — the node remembers the last loaded model and automatically restores it on page refresh or ComfyUI restart
@@ -19,7 +19,7 @@ A [ComfyUI](https://github.com/comfyanonymous/ComfyUI) custom node that combines
 
 ### 💾 Per-Model Preset System
 - Save and load generation presets **per checkpoint model** — each model remembers its own settings
-- Preset fields: **Sampler**, **Scheduler**, **CFG**, **Steps**, **Clip Skip**, **Width**, **Height**, **RNG**, **CLIP**, **VAE**
+- Preset fields: **Sampler**, **Scheduler**, **CFG**, **Steps**, **Clip Skip**, **Width**, **Height**, **RNG**, **CLIP**, **Clip Type**, **VAE**
 - **Resolution preset dropdown** — quickly set width and height from a list of common resolutions for SD 1.5, SDXL, and Flux models (square, landscape, and portrait aspects)
 - **Batch size control** — set batch size directly on the node (1–64); outputs an empty latent tensor sized to the current width, height, and batch
 - **Auto-populate presets from CivitAI** — when adding a new model or fetching thumbnails, the node extracts generation metadata (sampler, scheduler, CFG, steps, clip skip, resolution) from CivitAI example images and automatically saves them as the model's preset
@@ -31,6 +31,8 @@ A [ComfyUI](https://github.com/comfyanonymous/ComfyUI) custom node that combines
   - Includes vendored Philox 4×32 RNG for NVidia-compatible cross-GPU reproducibility
   - Patches `comfy.sample.prepare_noise` and hijacks k-diffusion's `default_noise_sampler` for consistent noise in all samplers
 - **External CLIP & VAE** — select `embedded` (uses the checkpoint's built-in CLIP/VAE) or pick any external CLIP or VAE model file from ComfyUI's `clip`/`vae` folders; the selection is saved as part of the preset so each model can have its own preferred CLIP and VAE
+- **CLIP type selector** — when using an external CLIP model, choose the architecture type (`stable_diffusion`, `flux`, `sd3`, `wan`, etc.) to ensure correct loading; the type is saved per-model in the preset
+- **GGUF CLIP support** — `.gguf` text encoder files from [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (city96) are supported as external CLIP models with proper type selection
 
 ### 🔀 Sampler / Scheduler Fallback System
 Some models on CivitAI use sampler or scheduler names that don't exist in the user's ComfyUI installation — either because they follow A1111 naming conventions, contain typos, or reference custom samplers that aren't installed. Instead of crashing at generation time, the node resolves names through a multi-layer fallback:
@@ -50,12 +52,23 @@ Some models on CivitAI use sampler or scheduler names that don't exist in the us
 
 Fallback is applied both at **execution time** and when **auto-populating presets** from CivitAI metadata. All resolution steps are logged to the console.
 
+### 🔧 GGUF Model Support
+The node natively supports `.gguf` quantized model files from [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (city96):
+
+- **Automatic discovery** — `.gguf` files in `checkpoints/`, `diffusion_models/`, and `unet/` folders appear in the model list automatically
+- **Smart loader** — dynamically finds city96's `UnetLoaderGGUF` at runtime by scanning `sys.modules`, regardless of how the extension was installed or what its folder is named
+- **GGUF CLIP** — `.gguf` text encoder files are loaded via city96's `CLIPLoaderGGUF` with the correct CLIP type
+- **No embedded CLIP/VAE** — GGUF models (like diffusion models) require external CLIP and VAE to be set in the preset
+- **Full feature support** — all existing features work with GGUF models: presets, thumbnails, CivitAI metadata, favorites, updates, downloads, and deletion
+
+> **Requires:** [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) by city96. If not installed, the node will show a clear error message with install instructions.
+
 ### 📂 Model Browser & Manager
 The Model Browser is a full visual panel that opens from the node's **📂 Load Model** button. It serves as both a model selector and a complete model manager:
 
 - **Visual card grid** with lazy-loaded thumbnails fetched from CivitAI
 - **Search** by model name with real-time filtering
-- **Base model filter** — filter the grid by architecture: SDXL, Illustrious, Pony, NoobAI, Qwen, Flux, Chroma, Wan, and others
+- **Base model filter** — filter the grid by architecture: SDXL, Illustrious, Pony, NoobAI, SD15, Qwen, Flux, Chroma, Wan, ZImage, and others
 - **⭐ Favorites** — mark preferred models with a star toggle and filter to show favorites only
 - **NSFW detection** — models flagged by CivitAI's `nsfw_level` are automatically blurred; click the 👁 eye button to reveal individual cards
 - **Video thumbnail support** — `.mp4` and `.webm` thumbnails play inline on cards
@@ -66,6 +79,7 @@ The Model Browser is a full visual panel that opens from the node's **📂 Load 
 - **↺ Rebuild Cache** — force re-fetches all metadata from CivitAI, ignoring the local cache (favorites and manual overrides are preserved)
 - **Model Info overlay** — right-click any card → **Model Info** to view a detailed overlay with model name, version, base model, file size, file path, tags, example images gallery (with lightbox and **📋 metadata viewer**), and the full CivitAI model description (HTML rendered)
 - **📋 Image Metadata Viewer** — click the 📋 button on any example image in the Model Info overlay to view its generation metadata: positive/negative prompts (with copy-to-clipboard), sampler, scheduler, CFG, steps, clip skip, seed, and size
+- **Editable metadata** — edit the display name, version, and base model directly in the Model Info overlay; manual edits survive CivitAI refreshes
 - **CivitAI API key management** — set your API key directly in the panel with a validation button to confirm it works
 
 #### Model Updates & Downloads
@@ -84,7 +98,7 @@ The Model Browser is a full visual panel that opens from the node's **📂 Load 
 
 #### Sidebar Preset Editor
 - The right sidebar displays and edits the preset for the selected model
-- All preset fields are shown: Sampler, Scheduler, CFG, Steps, Clip Skip, RNG, Width, Height, CLIP, VAE
+- All preset fields are shown: Sampler, Scheduler, CFG, Steps, Clip Skip, RNG, Width, Height, CLIP, Clip Type, VAE
 - Click **Edit Preset** to unlock the fields, modify values, then click **Save Preset** to persist
 - Sampler and scheduler lists are loaded dynamically from ComfyUI's `/object_info` endpoint, so they automatically reflect any installed sampler extensions
 - **Auto-refreshes** after Fetch Thumbnails/Infos to immediately display newly populated preset values
@@ -109,6 +123,7 @@ Then restart ComfyUI.
 
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
 - A [CivitAI API key](https://civitai.com/user/account) (required for fetching thumbnails, model info, and downloading)
+- [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) by city96 (optional — required only for loading `.gguf` quantized models and GGUF text encoders)
 
 > **Note:** [smZNodes](https://github.com/shiimizu/ComfyUI_smZNodes) is **no longer required**. As of v1.2.0, the RNG subsystem is fully self-contained using code adapted from smZNodes. If smZNodes is installed alongside, the two coexist transparently with no conflicts.
 
@@ -128,7 +143,7 @@ Click **📂 Load Model** to open the Model Browser. Select a model card and cli
 Drag an image with embedded generation metadata (ComfyUI workflow or A1111-style parameters) onto the node. The node will parse the metadata, identify the checkpoint model, and load it with its saved preset.
 
 ### 4. Edit a preset
-On the node, click the **◀ ▶** arrows to step numeric values, or click the center value to type a number directly in the inline editor. Dropdown rows (Sampler, Scheduler, RNG, Resolution Preset, CLIP, VAE) open a compact listbox on single click. You can also edit presets from the sidebar in the Model Browser panel.
+On the node, click the **◀ ▶** arrows to step numeric values, or click the center value to type a number directly in the inline editor. Dropdown rows (Sampler, Scheduler, RNG, Resolution Preset, CLIP, Clip Type, VAE) open a compact listbox on single click. You can also edit presets from the sidebar in the Model Browser panel.
 
 ### 5. Use resolution presets
 Use the **Res Preset** dropdown to quickly set width and height to a standard resolution. Presets are grouped by model architecture:
@@ -156,6 +171,14 @@ Use the **RNG** dropdown to select the noise generation source:
 ### 10. External CLIP / VAE
 Use the **CLIP** and **VAE** dropdowns on the node or in the Model Browser sidebar to select an external model file, or leave as `embedded` to use the checkpoint's built-in CLIP/VAE. If an external file fails to load, the node falls back to the embedded version with a console warning.
 
+When loading an external CLIP model, use the **Clip Type** dropdown to select the correct architecture:
+- **stable_diffusion** — SD 1.5, SDXL, Illustrious, Pony, NoobAI
+- **flux** / **flux2** — Flux.1 models
+- **sd3** — SD3 and SD3.5
+- **wan** — Wan Video models
+
+This is especially important for `.gguf` text encoders, which require the correct type to load properly via city96's GGUF CLIP loader.
+
 ### 11. Manage your models
 Use the Model Browser to organize your collection:
 - **⭐ Star** your favorite models and toggle the favorites filter
@@ -172,6 +195,14 @@ If a preset or CivitAI metadata contains a sampler or scheduler name that isn't 
 [CWK] Sampler ++ fix: 'euler_ancestral_cfg++' → 'euler_ancestral_cfg_pp'
 [CWK] ⚠ Sampler 'unknown_sampler' not found — falling back to 'euler'
 ```
+
+### 14. GGUF models
+To use `.gguf` quantized models:
+1. Install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) by city96
+2. Place `.gguf` model files in your `ComfyUI/models/unet/` or `ComfyUI/models/diffusion_models/` folder
+3. The models will appear automatically in the Model Browser
+4. Set an external **CLIP** (with the correct **Clip Type**) and **VAE** in the preset, since GGUF models don't include embedded CLIP/VAE
+5. Click **💾 Update Preset** to save these settings — they'll be restored automatically next time
 
 ---
 
@@ -190,7 +221,7 @@ If a preset or CivitAI metadata contains a sampler or scheduler name that isn't 
 | width | INT | Preset or override width |
 | height | INT | Preset or override height |
 
-> `clip_skip`, `rng`, `clip_name`, `vae_name`, and `batch_size` are applied internally and do not appear as separate output pins (batch_size is reflected in the LATENT tensor dimensions).
+> `clip_skip`, `rng`, `clip_name`, `clip_type`, `vae_name`, and `batch_size` are applied internally and do not appear as separate output pins (batch_size is reflected in the LATENT tensor dimensions).
 
 ---
 
@@ -200,15 +231,16 @@ The node registers the following REST routes on the ComfyUI server:
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/cwk/models` | List all checkpoint and diffusion models with presets and metadata |
+| GET | `/cwk/models` | List all checkpoint, diffusion, and GGUF models with presets and metadata |
 | GET | `/cwk/preset` | Fetch preset for a model |
 | POST | `/cwk/preset` | Save preset for a model |
-| GET | `/cwk/clips` | List available CLIP models (`embedded` + all files) |
+| GET | `/cwk/clips` | List available CLIP models (`embedded` + all files including GGUF) |
 | GET | `/cwk/vaes` | List available VAE models (`embedded` + all files) |
 | GET | `/cwk/last_model` | Get the last-used model name with its preset and metadata |
 | POST | `/cwk/last_model` | Save the last-used model name |
 | GET | `/cwk/resolution_presets` | List all resolution preset labels with width/height values |
 | GET | `/cwk/civitai/meta` | Get cached CivitAI metadata for a model |
+| POST | `/cwk/civitai/meta/edit` | Manually edit metadata fields (civitai_name, version_name, base_model) |
 | POST | `/cwk/civitai/fetch/stream` | SSE stream for bulk CivitAI metadata fetch |
 | POST | `/cwk/civitai/refresh` | Refresh CivitAI data for a single model |
 | POST | `/cwk/civitai/refresh/all` | Force refresh all models (SSE stream) |
@@ -260,8 +292,8 @@ This runs at two points:
 
 ```
 CWK_Checkpoints_Preset_Manager/
-├── __init__.py                 # ComfyUI entry point — registers nodes and routes
-├── nodes.py                    # Node definition, preset helpers, sampler/scheduler fallback, CLIP/VAE/RNG loaders, resolution presets, last-model persistence
+├── __init__.py                 # ComfyUI entry point — registers nodes and routes, registers .gguf extension
+├── nodes.py                    # Node definition, preset helpers, sampler/scheduler fallback, CLIP/VAE/RNG/GGUF loaders, resolution presets, last-model persistence
 ├── cwk_rng_shared.py           # Self-contained RNG options (smZ_opts protocol)
 ├── cwk_rng_philox.py           # Vendored Philox 4×32 NVidia-compatible RNG
 ├── cwk_rng.py                  # prepare_noise, TorchHijack, k-diffusion hijacking
