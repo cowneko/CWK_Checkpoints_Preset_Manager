@@ -30,6 +30,7 @@ function isNsfwModel(model) {
 const BASE_MODEL_FILTERS = [
   { label: "All Types",   match: null },
   { label: "SDXL",        match: ["sdxl"] },
+  { label: "SD15",        match: ["sd 1.5"] },
   { label: "Illustrious", match: ["illustrious"] },
   { label: "Pony",        match: ["pony"] },
   { label: "NoobAI",      match: ["noobai"] },
@@ -37,6 +38,7 @@ const BASE_MODEL_FILTERS = [
   { label: "Flux",        match: ["flux"] },
   { label: "Chroma",      match: ["chroma"] },
   { label: "Wan",         match: ["wan video", "wan"] },
+  { label: "ZImage",      match: ["zimage"] },
   { label: "Others",      match: "__others__" },
 ];
 

@@ -313,18 +313,33 @@ async def _lookup_by_path(abs_path: str, model_name: str, session, loop) -> dict
 
 
 def _keep_manual_overrides(new_info: dict, existing: dict) -> dict:
+    # Preserve local thumbnail
     if existing.get("thumbnail", "").startswith("/cwk/local_thumbnails/"):
         new_info["thumbnail"] = existing["thumbnail"]
+    # Preserve manual NSFW override
     if existing.get("nsfw_manual") is not None:
         new_info["nsfw_manual"] = existing["nsfw_manual"]
+    # Preserve favorite flag
     if existing.get("favorite"):
         new_info["favorite"] = True
+    # Preserve tags if new data doesn't have them
     existing_tags = existing.get("tags")
     if isinstance(existing_tags, list) and existing_tags and not new_info.get("tags"):
         new_info["tags"] = existing_tags
+    # Preserve update check results
     if existing.get("update_available"):
         new_info["update_available"] = existing["update_available"]
         new_info["latest_version_id"] = existing.get("latest_version_id")
+
+    # ── NEW: Preserve manually-edited fields ──────────────────────────────────
+    manual_fields = existing.get("_manual_overrides", [])
+    if isinstance(manual_fields, list):
+        for field in manual_fields:
+            if field in existing:
+                new_info[field] = existing[field]
+        if manual_fields:
+            new_info["_manual_overrides"] = manual_fields
+
     return new_info
 
 
@@ -1125,6 +1140,51 @@ async def handle_resolution_presets(req: web.Request) -> web.Response:
     for label, (w, h) in RESOLUTION_PRESETS.items():
         result.append({"label": label, "width": w, "height": h})
     return web.json_response(result)
+    
+# ─── Manual metadata edit endpoint ────────────────────────────────────────
+
+async def handle_edit_meta(req: web.Request) -> web.Response:
+    """POST /cwk/civitai/meta/edit — Manually set metadata fields for models
+    that don't have CivitAI data (or override existing values).
+    Accepted fields: civitai_name, version_name, base_model.
+    These are flagged as manual overrides so they survive CivitAI refreshes."""
+    try:
+        body = await req.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    model_name = body.get("model", "")
+    if not model_name:
+        return web.json_response({"error": "model required"}, status=400)
+
+    edits = body.get("edits", {})
+    if not edits or not isinstance(edits, dict):
+        return web.json_response({"error": "edits required"}, status=400)
+
+    ALLOWED_FIELDS = {"civitai_name", "version_name", "base_model"}
+    filtered = {k: v for k, v in edits.items() if k in ALLOWED_FIELDS and isinstance(v, str)}
+    if not filtered:
+        return web.json_response({"error": "no valid fields to edit"}, status=400)
+
+    meta = _load_meta(model_name)
+
+    # Apply edits
+    for key, val in filtered.items():
+        meta[key] = val.strip()
+
+    # Track which fields were manually overridden so they survive CivitAI refreshes
+    manual = meta.get("_manual_overrides", [])
+    if not isinstance(manual, list):
+        manual = []
+    for key in filtered:
+        if key not in manual:
+            manual.append(key)
+    meta["_manual_overrides"] = manual
+
+    _save_meta(model_name, meta)
+
+    print(f"[CWK] Manual metadata edit for {model_name}: {filtered}")
+    return web.json_response({"ok": True, "meta": meta})    
 
 # ─── Route registration ───────────────────────────────────────────────────────
 
@@ -1156,5 +1216,6 @@ def register_routes(app: web.Application) -> None:
     r.add_get   ("/cwk/vaes",                         handle_list_vaes)
     r.add_get   ("/cwk/last_model",                   handle_last_model)
     r.add_post  ("/cwk/last_model",                   handle_save_last_model)
-    r.add_get   ("/cwk/resolution_presets",           handle_resolution_presets)    
+    r.add_get   ("/cwk/resolution_presets",           handle_resolution_presets)
+    r.add_post  ("/cwk/civitai/meta/edit",            handle_edit_meta)
     print("[CWK_PresetManager] Routes registered.")

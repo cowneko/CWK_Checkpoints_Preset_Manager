@@ -26,6 +26,20 @@ function _isVideo(url) {
 // Only blur X and above (level >= 3)
 const _INFO_NSFW_BLUR = 3;
 
+// ─── Known base model values for the dropdown ─────────────────────────────────
+const _BASE_MODEL_OPTIONS = [
+  "SDXL 1.0", "SDXL Turbo", "SDXL Lightning",
+  "SD 1.5", "SD 1.5 LCM", "SD 1.5 Hyper",
+  "Illustrious", "NoobAI",
+  "Pony",
+  "Flux.1 D", "Flux.1 S",
+  "Chroma",
+  "Wan Video",
+  "Qwen",
+  "ZImageBase", "ZImageTurbo",
+  "Other",
+];
+
 function _makeOverlay() {
   const el = document.createElement("div");
   el.style.cssText = `
@@ -102,6 +116,7 @@ function _injectInfoStyles() {
     .cwk-info-label {
       font-size:10px; color:#6c7086; font-weight:700;
       text-transform:uppercase; letter-spacing:.05em; margin-bottom:4px;
+      display:flex; align-items:center; gap:6px;
     }
     .cwk-info-value {
       font-size:13px; color:#cdd6f4; font-weight:500;
@@ -238,6 +253,39 @@ function _injectInfoStyles() {
     .cwk-lightbox-close {
       position:absolute; top:20px; right:24px;
       background:none; border:none; color:#fff; font-size:28px; cursor:pointer;
+    }
+
+    /* ── NEW: Edit button for editable info cells ──────────────────────────── */
+    .cwk-info-edit-btn {
+      background:none; border:1px solid #313552; border-radius:3px;
+      color:#6c7086; font-size:10px; cursor:pointer; padding:1px 5px;
+      transition:color .15s, border-color .15s; margin-left:auto;
+    }
+    .cwk-info-edit-btn:hover { color:#89b4fa; border-color:#89b4fa; }
+    .cwk-info-edit-input {
+      width:100%; background:#141824; border:1px solid #89b4fa;
+      border-radius:4px; color:#cdd6f4; font-size:13px; font-weight:500;
+      padding:3px 6px; outline:none; font-family:Inter,system-ui,sans-serif;
+      box-sizing:border-box;
+    }
+    .cwk-info-edit-select {
+      width:100%; background:#141824; border:1px solid #89b4fa;
+      border-radius:4px; color:#cdd6f4; font-size:13px; font-weight:500;
+      padding:3px 6px; outline:none; font-family:Inter,system-ui,sans-serif;
+      box-sizing:border-box; appearance:none; cursor:pointer;
+    }
+    .cwk-info-save-bar {
+      display:flex; align-items:center; gap:8px; margin-top:8px;
+    }
+    .cwk-info-save-btn {
+      padding:5px 14px; border-radius:5px; border:1px solid #a6e3a1;
+      background:#1e2335; color:#a6e3a1; font-size:12px; font-weight:600;
+      cursor:pointer; transition:background .15s;
+    }
+    .cwk-info-save-btn:hover { background:#2a2f45; }
+    .cwk-info-save-btn:disabled { opacity:.5; cursor:default; }
+    .cwk-info-save-status {
+      font-size:11px; color:#a6e3a1; font-style:italic;
     }
   `;
   document.head.appendChild(st);
@@ -403,6 +451,108 @@ function _hasMetadata(imgObj) {
   );
 }
 
+// ─── Editable cell helper ─────────────────────────────────────────────────────
+
+/**
+ * Makes a cell's value editable. When the edit button is clicked, the value
+ * element is replaced with an input (or select for base_model).
+ * Returns an object { getValue } to read the current edited value.
+ */
+function _makeEditable(cell, fieldKey, currentValue, pendingEdits) {
+  const labelEl = cell.querySelector(".cwk-info-label");
+  const valueEl = cell.querySelector(".cwk-info-value");
+  if (!labelEl || !valueEl) return;
+
+  const editBtn = document.createElement("button");
+  editBtn.className = "cwk-info-edit-btn";
+  editBtn.textContent = "✏️";
+  editBtn.title = "Edit this field";
+  labelEl.appendChild(editBtn);
+
+  editBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    // Already editing?
+    if (cell.querySelector(".cwk-info-edit-input, .cwk-info-edit-select")) return;
+
+    const curVal = pendingEdits[fieldKey] ?? currentValue;
+
+    if (fieldKey === "base_model") {
+      // Render a <select> with known base model options + the current value
+      const select = document.createElement("select");
+      select.className = "cwk-info-edit-select";
+
+      const options = [..._BASE_MODEL_OPTIONS];
+      // If current value isn't in the list, add it at the top
+      if (curVal && !options.some(o => o.toLowerCase() === curVal.toLowerCase())) {
+        options.unshift(curVal);
+      }
+      for (const opt of options) {
+        const o = document.createElement("option");
+        o.value = opt;
+        o.textContent = opt;
+        if (opt.toLowerCase() === curVal.toLowerCase()) o.selected = true;
+        select.appendChild(o);
+      }
+
+      valueEl.textContent = "";
+      valueEl.style.overflow = "visible";
+      valueEl.appendChild(select);
+
+      select.addEventListener("change", () => {
+        pendingEdits[fieldKey] = select.value;
+      });
+      select.focus();
+    } else {
+      // Render a text <input>
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "cwk-info-edit-input";
+      input.value = curVal;
+
+      valueEl.textContent = "";
+      valueEl.style.overflow = "visible";
+      valueEl.appendChild(input);
+
+      input.addEventListener("input", () => {
+        pendingEdits[fieldKey] = input.value;
+      });
+      input.addEventListener("keydown", e => {
+        if (e.key === "Escape") {
+          // Revert
+          delete pendingEdits[fieldKey];
+          valueEl.textContent = currentValue;
+          valueEl.style.overflow = "";
+        }
+        e.stopPropagation();
+      });
+      input.focus();
+      input.select();
+    }
+
+    // Mark as dirty immediately
+    if (!(fieldKey in pendingEdits)) {
+      pendingEdits[fieldKey] = curVal;
+    }
+
+    editBtn.textContent = "↩";
+    editBtn.title = "Cancel edit";
+    editBtn._editing = true;
+
+    // Replace click handler for cancel
+    const origHandler = editBtn.onclick;
+    editBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      delete pendingEdits[fieldKey];
+      valueEl.textContent = currentValue;
+      valueEl.style.overflow = "";
+      editBtn.textContent = "✏️";
+      editBtn.title = "Edit this field";
+      editBtn._editing = false;
+      editBtn.onclick = null; // reset to let the addEventListener handle it again
+    };
+  });
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export function showModelInfo(model, civitaiApiKey = "") {
@@ -428,6 +578,9 @@ export function showModelInfo(model, civitaiApiKey = "") {
   const tagsState = (Array.isArray(c.tags) && c.tags.length > 0) ? "ready" : "fetch";
   const initialTags = tagsState === "ready" ? c.tags : [];
 
+  // ── Pending edits tracker ──────────────────────────────────────────────────
+  const pendingEdits = {};
+
   // ── Build DOM ──────────────────────────────────────────────────────────────
   const box = document.createElement("div");
   box.className = "cwk-info-box";
@@ -452,20 +605,20 @@ export function showModelInfo(model, civitaiApiKey = "") {
 
     <div class="cwk-info-body">
       <div class="cwk-info-grid">
-        <div class="cwk-info-cell">
+        <div class="cwk-info-cell" id="cwk-info-cell-version">
           <div class="cwk-info-label">Version</div>
           <div class="cwk-info-value">${_esc(versionName)}</div>
         </div>
-        <div class="cwk-info-cell">
-          <div class="cwk-info-label">File Name</div>
-          <div class="cwk-info-value">${_esc(fileName)}</div>
+        <div class="cwk-info-cell" id="cwk-info-cell-displayname">
+          <div class="cwk-info-label">Display Name</div>
+          <div class="cwk-info-value">${_esc(displayName)}</div>
         </div>
         <div class="cwk-info-cell cwk-info-cell-wide">
           <div class="cwk-info-label">Location</div>
           <div class="cwk-info-value cwk-info-path">${_esc(fullPath)}</div>
         </div>
         <div class="cwk-info-cell-split">
-          <div>
+          <div id="cwk-info-cell-basemodel">
             <div class="cwk-info-label">Base Model</div>
             <div class="cwk-info-value">${_esc(baseModel)}</div>
           </div>
@@ -474,6 +627,12 @@ export function showModelInfo(model, civitaiApiKey = "") {
             <div class="cwk-info-value">${_esc(sizeStr)}</div>
           </div>
         </div>
+      </div>
+
+      <!-- Save bar for manual edits -->
+      <div class="cwk-info-save-bar" id="cwk-info-save-bar" style="display:none;">
+        <button class="cwk-info-save-btn" id="cwk-info-save-btn">💾 Save Changes</button>
+        <span class="cwk-info-save-status" id="cwk-info-save-status"></span>
       </div>
 
       ${shortDesc ? `
@@ -503,8 +662,97 @@ export function showModelInfo(model, civitaiApiKey = "") {
 
   overlay.appendChild(box);
 
-  const tagsEl  = box.querySelector("#cwk-tags-el");
+  const tagsEl   = box.querySelector("#cwk-tags-el");
   const descWrap = box.querySelector("#cwk-info-desc-wrap");
+
+  // ── Make cells editable ────────────────────────────────────────────────────
+  const versionCell     = box.querySelector("#cwk-info-cell-version");
+  const displayNameCell = box.querySelector("#cwk-info-cell-displayname");
+  const baseModelCell   = box.querySelector("#cwk-info-cell-basemodel");
+
+  _makeEditable(versionCell,     "version_name", versionName, pendingEdits);
+  _makeEditable(displayNameCell, "civitai_name",  displayName, pendingEdits);
+  _makeEditable(baseModelCell,   "base_model",    baseModel,   pendingEdits);
+
+  // ── Show save bar when edits are pending ────────────────────────────────────
+  const saveBar    = box.querySelector("#cwk-info-save-bar");
+  const saveBtn    = box.querySelector("#cwk-info-save-btn");
+  const saveStatus = box.querySelector("#cwk-info-save-status");
+
+  // Use a MutationObserver + input events to detect when fields are being edited
+  const _checkDirty = () => {
+    const hasPending = Object.keys(pendingEdits).length > 0;
+    saveBar.style.display = hasPending ? "flex" : "none";
+  };
+
+  // Poll for changes (simple approach — runs on user interactions within the grid)
+  box.querySelector(".cwk-info-grid").addEventListener("input",  _checkDirty);
+  box.querySelector(".cwk-info-grid").addEventListener("change", _checkDirty);
+  box.querySelector(".cwk-info-grid").addEventListener("click",  () => setTimeout(_checkDirty, 50));
+
+  saveBtn.addEventListener("click", async () => {
+    const edits = { ...pendingEdits };
+    if (Object.keys(edits).length === 0) return;
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving…";
+    saveStatus.textContent = "";
+
+    try {
+      const res = await fetch("/cwk/civitai/meta/edit", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ model: model.name, edits }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      // Update the in-memory model object so the panel grid reflects changes
+      if (!model.civitai) model.civitai = {};
+      for (const [k, v] of Object.entries(edits)) {
+        model.civitai[k] = v;
+      }
+
+      // Update the displayed values in the cells (revert from input to text)
+      if (edits.version_name) {
+        const ve = versionCell.querySelector(".cwk-info-value");
+        ve.textContent = edits.version_name;
+        ve.style.overflow = "";
+      }
+      if (edits.civitai_name) {
+        const de = displayNameCell.querySelector(".cwk-info-value");
+        de.textContent = edits.civitai_name;
+        de.style.overflow = "";
+        // Also update the header title
+        box.querySelector(".cwk-info-model-name").textContent = edits.civitai_name;
+      }
+      if (edits.base_model) {
+        const be = baseModelCell.querySelector(".cwk-info-value");
+        be.textContent = edits.base_model;
+        be.style.overflow = "";
+      }
+
+      // Clear pending edits
+      for (const k of Object.keys(pendingEdits)) delete pendingEdits[k];
+      saveBar.style.display = "none";
+
+      saveStatus.textContent = "✓ Saved!";
+      saveBtn.textContent = "💾 Save Changes";
+      saveBtn.disabled = false;
+      setTimeout(() => { saveStatus.textContent = ""; }, 2000);
+    } catch (e) {
+      saveStatus.textContent = `✗ ${e.message}`;
+      saveStatus.style.color = "#f38ba8";
+      saveBtn.textContent = "💾 Save Changes";
+      saveBtn.disabled = false;
+      setTimeout(() => {
+        saveStatus.textContent = "";
+        saveStatus.style.color = "";
+      }, 3000);
+    }
+  });
 
   // ── Close ──────────────────────────────────────────────────────────────────
   box.querySelector(".cwk-info-close-btn").addEventListener("click", () => overlay.remove());
