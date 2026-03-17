@@ -6,7 +6,7 @@ import { app }               from "../../scripts/app.js";
 import { injectStyles }      from "./cwk_styles.js";
 import { ModelBrowserPanel } from "./cwk_panel.js";
 
-// ─── Constants ─────────────────────────────────────────────────���──────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const NODE_TYPE = "CWK_ModelPresetManager";
 
@@ -24,7 +24,7 @@ const ARROW_W     = 20;
 
 const TITLE_H   = () => LiteGraph.NODE_TITLE_HEIGHT ?? 30;
 const SLOT_H    = () => LiteGraph.NODE_SLOT_HEIGHT  ?? 20;
-const N_OUTPUTS = 9;
+const N_OUTPUTS = 10;
 
 function getSlotsBottom() {
   return TITLE_H() + N_OUTPUTS * SLOT_H() + 6;
@@ -36,8 +36,62 @@ let SAMPLERS   = ["euler","euler_ancestral","dpmpp_2m","dpmpp_2m_sde",
                   "dpmpp_sde","dpmpp_3m_sde","ddim","uni_pc","lcm"];
 let SCHEDULERS = ["normal","karras","exponential","sgm_uniform","simple","beta"];
 const RNGS     = ["cpu","gpu", "nv"];
+const MODEL_SAMPLING_TYPES = ["eps","v_prediction","lcm","x0","img_to_img"];
 let CLIPS      = ["embedded"];
+let CLIP_TYPES = ["stable_diffusion"];
 let VAES       = ["embedded"];
+
+let RES_PRESETS = ["(preset)"];
+let RES_PRESETS_MAP = {};
+
+function rowByKey(key) {
+  return INFO_ROWS.find(r => r.key === key);
+}
+
+// ── Group separator indices — a divider line is drawn BEFORE these row indices ──
+const GROUP_SEPARATORS = new Set([2, 5, 10]);
+
+const INFO_ROWS = [
+  // ── Group 1: RNG & Model Sampling ──
+  { key: "rng",            label: "RNG",            widget: "override_rng",            type: "list",  options: RNGS                },  // 0
+  { key: "model_sampling", label: "Model Sampling", widget: "override_model_sampling", type: "list",  options: MODEL_SAMPLING_TYPES },  // 1
+  // ── Group 2: CLIP / Clip Type / VAE ──
+  { key: "clip_name",     label: "CLIP",       widget: "override_clip_name",  type: "list",  options: CLIPS       },  // 2
+  { key: "clip_type",     label: "Clip Type",  widget: "override_clip_type",  type: "list",  options: CLIP_TYPES  },  // 3
+  { key: "vae_name",      label: "VAE",        widget: "override_vae_name",   type: "list",  options: VAES        },  // 4
+  // ── Group 3: Sampler / Scheduler / CFG / Steps / Clip skip ──
+  { key: "sampler_name",  label: "Sampler",    widget: "override_sampler",    type: "list",  options: SAMPLERS    },  // 5
+  { key: "scheduler",     label: "Scheduler",  widget: "override_scheduler",  type: "list",  options: SCHEDULERS  },  // 6
+  { key: "cfg",           label: "CFG",        widget: "override_cfg",        type: "float", min: 0,   max: 30    },  // 7
+  { key: "steps",         label: "Steps",      widget: "override_steps",      type: "int",   min: 1,   max: 200   },  // 8
+  { key: "clip_skip",     label: "Clip skip",  widget: "override_clip_skip",  type: "int",   min: -24, max: -1    },  // 9
+  // ── Group 4: Resolution / Batch ──
+  { key: "res_preset",    label: "Res Preset", widget: "resolution_preset",   type: "list",  options: RES_PRESETS  },  // 10
+  { key: "width",         label: "Width",      widget: "override_width",      type: "int",   min: 64,  max: 8192  },  // 11
+  { key: "height",        label: "Height",     widget: "override_height",     type: "int",   min: 64,  max: 8192  },  // 12
+  { key: "batch_size",    label: "Batch",      widget: "batch_size",          type: "int",   min: 1,   max: 64    },  // 13
+];
+
+// ─── Async data loaders (single definitions, no duplicates) ───────────────────
+
+async function _loadResolutionPresets() {
+  try {
+    const res = await fetch("/cwk/resolution_presets");
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data) && data.length) {
+      RES_PRESETS = data.map(d => d.label);
+      RES_PRESETS_MAP = {};
+      for (const d of data) {
+        RES_PRESETS_MAP[d.label] = { width: d.width, height: d.height };
+      }
+      const resRow = rowByKey("res_preset");
+      if (resRow) resRow.options = RES_PRESETS;
+    }
+  } catch (e) {
+    console.warn("[CWK] Could not load resolution presets:", e);
+  }
+}
 
 async function _loadSamplerOptions() {
   try {
@@ -45,15 +99,26 @@ async function _loadSamplerOptions() {
     if (!res.ok) return;
     const data = await res.json();
     const inputs = data?.CWK_ModelPresetManager?.input;
+
     const samplers   = (inputs?.optional?.override_sampler?.[0]   ?? []).filter(v => v !== "(preset)");
     const schedulers = (inputs?.optional?.override_scheduler?.[0] ?? []).filter(v => v !== "(preset)");
-    if (samplers.length)   { SAMPLERS   = samplers;   INFO_ROWS[0].options = samplers;   }
-    if (schedulers.length) { SCHEDULERS = schedulers; INFO_ROWS[1].options = schedulers; }
+    if (samplers.length)   { SAMPLERS   = samplers;   const r = rowByKey("sampler_name"); if (r) r.options = samplers;   }
+    if (schedulers.length) { SCHEDULERS = schedulers;  const r = rowByKey("scheduler");    if (r) r.options = schedulers; }
 
     const clips = (inputs?.optional?.override_clip_name?.[0] ?? []).filter(v => v !== "(preset)");
     const vaes  = (inputs?.optional?.override_vae_name?.[0]  ?? []).filter(v => v !== "(preset)");
-    if (clips.length) { CLIPS = clips; INFO_ROWS[8].options = clips; }
-    if (vaes.length)  { VAES  = vaes;  INFO_ROWS[9].options = vaes;  }
+    if (clips.length) { CLIPS = clips; const r = rowByKey("clip_name"); if (r) r.options = clips; }
+    if (vaes.length)  { VAES  = vaes;  const r = rowByKey("vae_name");  if (r) r.options = vaes;  }
+
+    const clipTypes = (inputs?.optional?.override_clip_type?.[0] ?? []).filter(v => v !== "(preset)");
+    if (clipTypes.length) { CLIP_TYPES = clipTypes; const r = rowByKey("clip_type"); if (r) r.options = clipTypes; }
+
+    // Load model sampling types from object_info
+    const modelSamplingOpts = (inputs?.optional?.override_model_sampling?.[0] ?? []).filter(v => v !== "(preset)");
+    if (modelSamplingOpts.length) {
+      const r = rowByKey("model_sampling");
+      if (r) r.options = modelSamplingOpts;
+    }
   } catch (e) {
     console.warn("[CWK] Could not load sampler options from object_info:", e);
   }
@@ -67,32 +132,21 @@ async function _loadClipVaeOptions() {
     ]);
     if (clipRes.ok) {
       const { clips } = await clipRes.json();
-      if (clips?.length) { CLIPS = clips; INFO_ROWS[8].options = clips; }
+      if (clips?.length) { CLIPS = clips; const r = rowByKey("clip_name"); if (r) r.options = clips; }
     }
     if (vaeRes.ok) {
       const { vaes } = await vaeRes.json();
-      if (vaes?.length) { VAES = vaes; INFO_ROWS[9].options = vaes; }
+      if (vaes?.length) { VAES = vaes; const r = rowByKey("vae_name"); if (r) r.options = vaes; }
     }
   } catch (e) {
     console.warn("[CWK] Could not load CLIP/VAE lists:", e);
   }
 }
 
-const INFO_ROWS = [
-  { key: "sampler_name", label: "Sampler",   widget: "override_sampler",   type: "list",  options: SAMPLERS   },
-  { key: "scheduler",    label: "Scheduler", widget: "override_scheduler", type: "list",  options: SCHEDULERS },
-  { key: "cfg",          label: "CFG",       widget: "override_cfg",       type: "float", min: 0,   max: 30   },
-  { key: "steps",        label: "Steps",     widget: "override_steps",     type: "int",   min: 1,   max: 200  },
-  { key: "clip_skip",    label: "Clip skip", widget: "override_clip_skip", type: "int",   min: -24, max: -1   },
-  { key: "width",        label: "Width",     widget: "override_width",     type: "int",   min: 64,  max: 8192 },
-  { key: "height",       label: "Height",    widget: "override_height",    type: "int",   min: 64,  max: 8192 },
-  { key: "rng",          label: "RNG",       widget: "override_rng",       type: "list",  options: RNGS       },
-  { key: "clip_name",    label: "CLIP",      widget: "override_clip_name", type: "list",  options: CLIPS      },
-  { key: "vae_name",     label: "VAE",       widget: "override_vae_name",  type: "list",  options: VAES       },
-];
-
+// ─── Fire all loaders once ────────────────────────────────────────────────────
 _loadSamplerOptions();
 _loadClipVaeOptions();
+_loadResolutionPresets();
 
 const BTNS = [
   { label: "📂 Load Model",    key: "load"   },
@@ -114,8 +168,8 @@ const C = {
 };
 
 // ─── Node default colors ──────────────────────────────────────────────────────
-const NODE_COLOR   = "#141824";   // body background
-const NODE_BGCOLOR = "#1e2335";   // title bar background
+const NODE_COLOR   = "#141824";
+const NODE_BGCOLOR = "#1e2335";
 
 const BTN_COLORS = {
   load:   { border: "#313552", hoverBorder: "#89b4fa", hoverText: "#89b4fa" },
@@ -138,11 +192,12 @@ function loadImage(url) {
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
+const GROUP_SEP_H = 12;  // extra vertical space for group divider
+
 function getThumbRect(node) {
   const regionTop    = TITLE_H();
   const regionBottom = getSlotsBottom();
   const regionH      = regionBottom - regionTop;
-
   if (THUMB_H <= regionH - PAD * 2) {
     const thumbY = regionTop + (regionH - THUMB_H) / 2;
     return { x: PAD, y: thumbY, w: THUMB_W, h: THUMB_H };
@@ -160,7 +215,14 @@ function getRowsStartY(node) {
   return Math.max(thumbBottom, slotsBottom);
 }
 
-function getRowY(node, i) { return getRowsStartY(node) + i * (ROW_H + 3); }
+function getRowY(node, i) {
+  let y = getRowsStartY(node);
+  for (let r = 0; r < i; r++) {
+    y += ROW_H + 3;
+    if (GROUP_SEPARATORS.has(r + 1)) y += GROUP_SEP_H;
+  }
+  return y;
+}
 
 function getButtonRects(node) {
   const btnW  = node.size[0] - PAD * 2;
@@ -179,7 +241,12 @@ function getValueRect(node, i) {
 }
 
 function calcNodeHeight(node) {
-  return getRowsStartY(node) + INFO_ROWS.length * (ROW_H + 3) + PAD + BTNS_AREA_H;
+  let h = getRowsStartY(node);
+  for (let i = 0; i < INFO_ROWS.length; i++) {
+    if (GROUP_SEPARATORS.has(i)) h += GROUP_SEP_H;
+    h += ROW_H + 3;
+  }
+  return h + PAD + BTNS_AREA_H;
 }
 
 // ─── Hit testing ──────────────────────────────────────────────────────────────
@@ -217,153 +284,76 @@ function clampValue(row, val) {
   return row.type === "float" ? parseFloat(v.toFixed(2)) : v;
 }
 
-// ─── Modal number editor ──────────────────────────────────────────────────────
+// ─── Screen coords helper ─────────────────────────────────────────────────────
 
-function openNumberModal(row, currentValue, screenX, screenY, onCommit) {
-  closeNumberModal();
-
-  const backdrop = document.createElement("div");
-  backdrop.id = "cwk-num-modal-backdrop";
-  Object.assign(backdrop.style, {
-    position:   "fixed",
-    inset:      "0",
-    zIndex:     "99998",
-    background: "transparent",
-  });
-
-  const dialog = document.createElement("div");
-  Object.assign(dialog.style, {
-    position:     "fixed",
-    zIndex:       "99999",
-    background:   C.bgFull,
-    border:       `1px solid ${C.arrowHov}`,
-    borderRadius: "8px",
-    padding:      "16px 20px",
-    minWidth:     "200px",
-    boxShadow:    "0 8px 32px rgba(0,0,0,0.6)",
-    display:      "flex",
-    flexDirection:"column",
-    gap:          "10px",
-    fontFamily:   "Inter, system-ui, sans-serif",
-  });
-
-  const label = document.createElement("div");
-  label.textContent = row.label;
-  Object.assign(label.style, {
-    color:         C.textDim,
-    fontSize:      "11px",
-    textTransform: "uppercase",
-    letterSpacing: "0.05em",
-  });
-
-  const input = document.createElement("input");
-  input.type      = "text";
-  input.inputMode = "numeric";
-  input.value     = String(currentValue ?? "");
-  Object.assign(input.style, {
-    background:   C.surface,
-    color:        C.text,
-    border:       `1px solid ${C.border}`,
-    borderRadius: "4px",
-    padding:      "6px 10px",
-    fontSize:     "14px",
-    outline:      "none",
-    width:        "100%",
-    boxSizing:    "border-box",
-    textAlign:    "center",
-  });
-  input.addEventListener("focus", () => { input.style.borderColor = C.arrowHov; });
-  input.addEventListener("blur",  () => { input.style.borderColor = C.border;   });
-
-  const hint = document.createElement("div");
-  hint.textContent = `Range: ${row.min ?? "—"} → ${row.max ?? "—"}`;
-  Object.assign(hint.style, { color: C.textDim, fontSize: "10px", textAlign: "center" });
-
-  const btnRow = document.createElement("div");
-  Object.assign(btnRow.style, { display: "flex", gap: "8px" });
-
-  const mkBtn = (text, primary) => {
-    const b = document.createElement("button");
-    b.textContent = text;
-    Object.assign(b.style, {
-      flex:       "1",
-      padding:    "6px",
-      borderRadius:"4px",
-      border:     `1px solid ${primary ? C.arrowHov : C.border}`,
-      background: primary ? C.hoverBg : C.surface,
-      color:      primary ? C.arrowHov : C.textDim,
-      cursor:     "pointer",
-      fontSize:   "12px",
-      fontFamily: "Inter, system-ui, sans-serif",
-    });
-    return b;
+function _canvasToScreen(node, vr) {
+  const bbox = app.canvas.canvas.getBoundingClientRect();
+  const zoom = app.canvas.ds?.scale ?? 1;
+  const off  = app.canvas.ds?.offset ?? [0, 0];
+  return {
+    x: (node.pos[0] + vr.x) * zoom + off[0] * zoom + bbox.left,
+    y: (node.pos[1] + vr.y) * zoom + off[1] * zoom + bbox.top,
+    w: vr.w * zoom,
+    h: vr.h * zoom,
   };
+}
 
-  const okBtn     = mkBtn("✓ OK",     true);
-  const cancelBtn = mkBtn("✕ Cancel", false);
-  btnRow.appendChild(okBtn);
-  btnRow.appendChild(cancelBtn);
+// ─── Stop all LiteGraph-interceptable events on an element ────────────────────
 
-  dialog.appendChild(label);
-  dialog.appendChild(input);
-  dialog.appendChild(hint);
-  dialog.appendChild(btnRow);
-  backdrop.appendChild(dialog);
-  document.body.appendChild(backdrop);
+function _blockCanvasEvents(el) {
+  for (const evt of ["mousedown", "mouseup", "click", "pointerdown", "pointerup",
+                      "dblclick", "contextmenu", "wheel", "touchstart", "touchend"]) {
+    el.addEventListener(evt, e => e.stopPropagation());
+  }
+}
 
-  requestAnimationFrame(() => {
-    const dw = dialog.offsetWidth  || 200;
-    const dh = dialog.offsetHeight || 120;
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const margin = 8;
+// ─── Inline number editor ─────────────────────────────────────────────────────
 
-    let x = screenX + 8;
-    let y = screenY + 8;
-
-    if (x + dw + margin > vw) x = screenX - dw - 8;
-    if (y + dh + margin > vh) y = screenY - dh - 8;
-    x = Math.max(margin, x);
-    y = Math.max(margin, y);
-
-    dialog.style.left = x + "px";
-    dialog.style.top  = y + "px";
+function openInlineNumberEditor(node, rowIdx, currentValue, onCommit) {
+  closeInlineEditor();
+  closeDropdown();
+  const row = INFO_ROWS[rowIdx];
+  const vr  = getValueRect(node, rowIdx);
+  const sc  = _canvasToScreen(node, vr);
+  const zoom = app.canvas.ds?.scale ?? 1;
+  const backdrop = document.createElement("div");
+  backdrop.id = "cwk-inline-backdrop";
+  Object.assign(backdrop.style, {
+    position: "fixed", inset: "0", zIndex: "99998", background: "transparent",
   });
-
-  input.focus();
-  input.select();
-
-  dialog.addEventListener("mousedown", e => e.stopPropagation());
-
+  const input = document.createElement("input");
+  input.id = "cwk-inline-editor"; input.type = "text"; input.inputMode = "decimal";
+  input.value = String(currentValue ?? "");
+  Object.assign(input.style, {
+    position: "fixed", left: sc.x+"px", top: sc.y+"px", width: sc.w+"px", height: sc.h+"px",
+    fontSize: Math.max(11, Math.round(11*zoom))+"px", fontFamily: "Inter,system-ui,sans-serif",
+    background: C.bgFull, color: C.text, border: `1px solid ${C.arrowHov}`,
+    borderRadius: "3px", outline: "none", zIndex: "99999", padding: "0 6px",
+    textAlign: "center", boxSizing: "border-box",
+  });
+  _blockCanvasEvents(input); _blockCanvasEvents(backdrop);
   let committed = false;
   const commit = () => {
-    if (committed) return;
-    committed = true;
-    const raw = input.value.trim();
-    closeNumberModal();
+    if (committed) return; committed = true;
+    const raw = input.value.trim(); closeInlineEditor();
     if (raw !== "") onCommit(clampValue(row, raw));
     app.canvas.setDirty(true, false);
   };
-  const cancel = () => {
-    if (committed) return;
-    committed = true;
-    closeNumberModal();
-    app.canvas.setDirty(true, false);
-  };
-
-  okBtn.addEventListener("click",      commit);
-  cancelBtn.addEventListener("click",  cancel);
-  backdrop.addEventListener("mousedown", cancel);
-
+  const cancel = () => { if (committed) return; committed = true; closeInlineEditor(); app.canvas.setDirty(true, false); };
   input.addEventListener("keydown", e => {
-    if (e.key === "Enter")  { e.preventDefault(); commit(); }
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
     if (e.key === "Escape") { cancel(); }
   });
+  backdrop.addEventListener("mousedown", e => { e.stopPropagation(); e.preventDefault(); commit(); });
+  backdrop.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); commit(); });
+  backdrop.appendChild(input); document.body.appendChild(backdrop);
+  requestAnimationFrame(() => { setTimeout(() => { input.focus(); input.select(); }, 0); });
 }
 
-function closeNumberModal() {
-  const el = document.getElementById("cwk-num-modal-backdrop");
-  if (el) el.remove();
+function closeInlineEditor() {
+  const el = document.getElementById("cwk-inline-backdrop"); if (el) el.remove();
+  const inp = document.getElementById("cwk-inline-editor");  if (inp) inp.remove();
 }
 
 // ─── Dropdown ─────────────────────────────────────────────────────────────────
@@ -371,80 +361,67 @@ function closeNumberModal() {
 let _dropdownOutside = null;
 
 function openDropdown(node, rowIdx, currentValue, onCommit) {
-  closeDropdown();
-  closeNumberModal();
-
-  const row  = INFO_ROWS[rowIdx];
-  const vr   = getValueRect(node, rowIdx);
-  const bbox = app.canvas.canvas.getBoundingClientRect();
+  closeDropdown(); closeInlineEditor();
+  const row = INFO_ROWS[rowIdx];
+  const vr  = getValueRect(node, rowIdx);
+  const sc  = _canvasToScreen(node, vr);
   const zoom = app.canvas.ds?.scale ?? 1;
-  const off  = app.canvas.ds?.offset ?? [0, 0];
-
-  const cx = (node.pos[0] + vr.x) * zoom + off[0] * zoom + bbox.left;
-  const cy = (node.pos[1] + vr.y) * zoom + off[1] * zoom + bbox.top;
-
+  const maxVisible = Math.min(row.options.length, 12);
+  const optionH    = Math.max(16, Math.round(18 * zoom));
+  const listH      = maxVisible * optionH + 4;
+  const vh         = window.innerHeight;
+  const spaceBelow = vh - sc.y - sc.h - 4;
+  const spaceAbove = sc.y - 4;
+  let dropTop;
+  if (spaceBelow >= listH || spaceBelow >= spaceAbove) { dropTop = sc.y + sc.h + 1; }
+  else { dropTop = sc.y - listH - 1; }
   const sel = document.createElement("select");
-  sel.id    = "cwk-node-dropdown";
+  sel.id = "cwk-node-dropdown"; sel.size = maxVisible;
   Object.assign(sel.style, {
-    position:     "fixed",
-    left:         cx + "px",
-    top:          cy + "px",
-    width:        (vr.w * zoom) + "px",
-    height:       (vr.h * zoom) + "px",
-    fontSize:     Math.round(11 * zoom) + "px",
-    fontFamily:   "Inter, system-ui, sans-serif",
-    background:   C.bgFull,
-    color:        C.text,
-    border:       `1px solid ${C.arrowHov}`,
-    borderRadius: "3px",
-    outline:      "none",
-    zIndex:       "99999",
-    cursor:       "pointer",
-    padding:      "0 4px",
+    position: "fixed", left: sc.x+"px", top: dropTop+"px", width: sc.w+"px", height: listH+"px",
+    fontSize: Math.max(11, Math.round(11*zoom))+"px", fontFamily: "Inter,system-ui,sans-serif",
+    background: C.bgFull, color: C.text, border: `1px solid ${C.arrowHov}`,
+    borderRadius: "4px", outline: "none", zIndex: "99999", cursor: "pointer",
+    padding: "2px 0", overflow: "auto",
   });
-
   for (const opt of row.options) {
     const o = document.createElement("option");
     o.value = opt; o.textContent = opt;
+    Object.assign(o.style, {
+      padding: "2px 8px",
+      background: String(currentValue) === opt ? C.hoverBg : "transparent",
+      color:      String(currentValue) === opt ? C.arrowHov : C.text,
+    });
     if (String(currentValue) === opt) o.selected = true;
     sel.appendChild(o);
   }
-
-  sel.addEventListener("mousedown", e => e.stopPropagation());
-  sel.addEventListener("mouseup",   e => e.stopPropagation());
-  sel.addEventListener("click",     e => e.stopPropagation());
-  document.body.appendChild(sel);
-  sel.focus();
-  setTimeout(() => sel.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })), 0);
-
+  _blockCanvasEvents(sel);
+  document.body.appendChild(sel); sel.focus();
+  const selectedOpt = sel.querySelector("option:checked");
+  if (selectedOpt) selectedOpt.scrollIntoView({ block: "nearest" });
   let committed = false;
-  const commit = () => {
-    if (committed) return;
-    committed = true;
-    const val = sel.value;
-    closeDropdown();
-    onCommit(val);
-    app.canvas.setDirty(true, false);
+  const commit = (val) => {
+    if (committed) return; committed = true;
+    closeDropdown(); onCommit(val ?? sel.value); app.canvas.setDirty(true, false);
   };
-
-  sel.addEventListener("change", commit);
+  sel.addEventListener("click", () => { commit(sel.value); });
   sel.addEventListener("keydown", e => {
     e.stopPropagation();
-    if (e.key === "Enter")  { e.preventDefault(); commit(); }
+    if (e.key === "Enter") { e.preventDefault(); commit(sel.value); }
     if (e.key === "Escape") { committed = true; closeDropdown(); app.canvas.setDirty(true, false); }
   });
-
-  _dropdownOutside = (e) => { if (e.target !== sel) commit(); };
-  setTimeout(() => {
-    document.addEventListener("mousedown", _dropdownOutside, { capture: true });
-  }, 100);
+  _dropdownOutside = (e) => {
+    if (e.target !== sel && !sel.contains(e.target)) {
+      if (!committed) { committed = true; closeDropdown(); app.canvas.setDirty(true, false); }
+    }
+  };
+  setTimeout(() => { document.addEventListener("pointerdown", _dropdownOutside, { capture: true }); }, 50);
 }
 
 function closeDropdown() {
-  const el = document.getElementById("cwk-node-dropdown");
-  if (el) el.remove();
+  const el = document.getElementById("cwk-node-dropdown"); if (el) el.remove();
   if (_dropdownOutside) {
-    document.removeEventListener("mousedown", _dropdownOutside, { capture: true });
+    document.removeEventListener("pointerdown", _dropdownOutside, { capture: true });
     _dropdownOutside = null;
   }
 }
@@ -465,6 +442,14 @@ function drawNode(node, ctx) {
   const preset = node._cwkPreset ?? {};
   const hover  = node._cwkHover;
 
+  const cornerR = LiteGraph.NODE_BORDER_RADIUS ?? 8;
+
+  // Clip all custom drawing to the node's rounded rect shape
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(0, 0, w, h, cornerR);
+  ctx.clip();
+
   ctx.fillStyle = C.bgFull;
   ctx.fillRect(0, 0, w, h);
 
@@ -472,16 +457,14 @@ function drawNode(node, ctx) {
   ctx.fillStyle  = C.bg;
   ctx.fillRect(0, contentY, w, h - contentY);
 
-  // ── Thumbnail ─────────────────────────────────────────────────────────────
+  // ── Thumbnail ──
   const img = loadImage(meta.thumbnail ?? null);
   roundRect(ctx, thumbR.x, thumbR.y, thumbR.w, thumbR.h, 6);
   ctx.fillStyle = C.surface; ctx.fill();
   ctx.strokeStyle = C.border; ctx.lineWidth = 1; ctx.stroke();
-
   if (img?.complete && img.naturalWidth > 0) {
     ctx.save();
-    roundRect(ctx, thumbR.x, thumbR.y, thumbR.w, thumbR.h, 6);
-    ctx.clip();
+    roundRect(ctx, thumbR.x, thumbR.y, thumbR.w, thumbR.h, 6); ctx.clip();
     const ir = img.naturalWidth / img.naturalHeight;
     const tr = thumbR.w / thumbR.h;
     let sw, sh, sx, sy;
@@ -495,13 +478,12 @@ function drawNode(node, ctx) {
     ctx.fillText("🖼", thumbR.x + thumbR.w/2, thumbR.y + thumbR.h/2);
   }
 
-  // ── Model info ────────────────────────────────────────────────────────────
+  // ── Model info ──
   const ny = thumbR.y + 6;
   const displayName = meta.civitai_name
     ?? (node._cwkModelName
       ? node._cwkModelName.replace(/^.*[/\\]/,"").replace(/\.[^.]+$/,"")
       : "No model loaded");
-
   ctx.fillStyle = C.text; ctx.font = "bold 13px Inter,system-ui,sans-serif";
   ctx.textAlign = "left"; ctx.textBaseline = "top";
   ctx.fillText(displayName, infoX, ny, infoW);
@@ -514,14 +496,13 @@ function drawNode(node, ctx) {
     ctx.fillText(node._cwkModelName.replace(/^.*[/\\]/,""), infoX, ny + 38, infoW);
   }
 
-  // ── Divider ───────────────────────────────────────────────────────────────
+  // ── Divider ──
   ctx.strokeStyle = C.border; ctx.lineWidth = 1;
   ctx.beginPath();
   const divY = getRowsStartY(node) - PAD/2;
-  ctx.moveTo(PAD, divY); ctx.lineTo(w - PAD, divY);
-  ctx.stroke();
+  ctx.moveTo(PAD, divY); ctx.lineTo(w - PAD, divY); ctx.stroke();
 
-  // ── Preset rows ───────────────────────────────────────────────────────────
+  // ── Preset rows ──
   for (let i = 0; i < INFO_ROWS.length; i++) {
     const row     = INFO_ROWS[i];
     const ry      = getRowY(node, i);
@@ -530,44 +511,45 @@ function drawNode(node, ctx) {
     const isHov   = hover?.rowIdx === i;
     const hovPart = isHov ? hover.part : null;
 
+    // ── Group separator line ──
+    if (GROUP_SEPARATORS.has(i)) {
+      const sepY = ry - GROUP_SEP_H / 2 - 1;
+      ctx.strokeStyle = C.border; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(PAD, sepY); ctx.lineTo(w - PAD, sepY); ctx.stroke();
+    }
+
     if (isHov) {
       roundRect(ctx, PAD, ry, w - PAD*2, ROW_H, 3);
       ctx.fillStyle = C.hoverBg; ctx.fill();
     }
-
     ctx.fillStyle = C.textDim; ctx.font = "11px Inter,system-ui,sans-serif";
     ctx.textAlign = "left"; ctx.textBaseline = "middle";
     ctx.fillText(row.label, PAD + 4, ry + ROW_H/2);
-
     roundRect(ctx, vr.x, vr.y, vr.w, vr.h, 4);
-    ctx.fillStyle   = C.surface;
+    ctx.fillStyle = C.surface;
     ctx.strokeStyle = isHov ? C.border : "transparent";
-    ctx.lineWidth   = 1; ctx.fill(); if (isHov) ctx.stroke();
-
+    ctx.lineWidth = 1; ctx.fill(); if (isHov) ctx.stroke();
     if (row.type === "list") {
       ctx.fillStyle = isHov ? C.arrowHov : C.textDim;
       ctx.font = "9px sans-serif"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
       ctx.fillText("▾", vr.x + vr.w - 5, ry + ROW_H/2);
       ctx.fillStyle = C.text; ctx.font = "11px Inter,system-ui,sans-serif";
       ctx.textAlign = "left";
-      const displayVal = String(val);
-      ctx.fillText(displayVal, vr.x + 6, ry + ROW_H/2, vr.w - 18);
+      ctx.fillText(String(val), vr.x + 6, ry + ROW_H/2, vr.w - 18);
     } else {
       ctx.font = "10px sans-serif"; ctx.textBaseline = "middle";
-      ctx.fillStyle = (hovPart === "left")  ? C.arrowHov : C.textDim;
-      ctx.textAlign = "left";
-      ctx.fillText("◀", vr.x + 4, ry + ROW_H/2);
+      ctx.fillStyle = (hovPart === "left") ? C.arrowHov : C.textDim;
+      ctx.textAlign = "left"; ctx.fillText("◀", vr.x + 4, ry + ROW_H/2);
       ctx.fillStyle = (hovPart === "right") ? C.arrowHov : C.textDim;
-      ctx.textAlign = "right";
-      ctx.fillText("▶", vr.x + vr.w - 4, ry + ROW_H/2);
+      ctx.textAlign = "right"; ctx.fillText("▶", vr.x + vr.w - 4, ry + ROW_H/2);
       ctx.fillStyle = (hovPart === "center") ? C.arrowHov : C.text;
-      ctx.font = "11px Inter,system-ui,sans-serif";
-      ctx.textAlign = "center";
+      ctx.font = "11px Inter,system-ui,sans-serif"; ctx.textAlign = "center";
       ctx.fillText(String(val), vr.x + vr.w/2, ry + ROW_H/2, vr.w - ARROW_W*2 - 4);
     }
   }
 
-  // ── Buttons ───────────────────────────────────────────────────────────────
+  // ── Buttons ──
   for (const r of getButtonRects(node)) {
     const isHov   = hover?.key === r.key;
     const isFlash = node._cwkFlash === r.key;
@@ -582,6 +564,57 @@ function drawNode(node, ctx) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(label, r.x + r.w/2, r.y + r.h/2, r.w - 8);
   }
+
+  ctx.restore();  // release the rounded-rect clip
+}
+
+// ─── Helper: fully load a model into the node (model name, meta, preset) ──────
+
+async function _loadModelIntoNode(node, modelName) {
+  const getW = name => node.widgets?.find(w => w.name === name);
+  const mw = getW("model_name");
+  if (mw) { mw.value = modelName; mw.callback?.(modelName); }
+  node._cwkModelName = modelName;
+  try {
+    const res = await fetch(`/cwk/civitai/meta?model=${encodeURIComponent(modelName)}`);
+    if (res.ok) node._cwkMeta = await res.json();
+  } catch {}
+  try {
+    const { preset } = await apiFetch(`/cwk/preset?model=${encodeURIComponent(modelName)}`);
+    if (preset) {
+      node._cwkPreset = { ...preset };
+      // Also set batch_size default if not in preset
+      if (node._cwkPreset.batch_size == null) node._cwkPreset.batch_size = 1;
+      // Also set res_preset display
+      if (node._cwkPreset.res_preset == null) node._cwkPreset.res_preset = "(preset)";
+      if (node._cwkPreset.clip_type == null) node._cwkPreset.clip_type = "stable_diffusion";
+      if (node._cwkPreset.model_sampling == null) node._cwkPreset.model_sampling = "eps";
+      const map = {
+        override_rng:              preset.rng,
+        override_model_sampling:   preset.model_sampling ?? "eps",
+        override_clip_name:        preset.clip_name,
+        override_clip_type:        preset.clip_type,
+        override_vae_name:         preset.vae_name,
+        override_sampler:          preset.sampler_name,
+        override_scheduler:        preset.scheduler,
+        override_cfg:              preset.cfg,
+        override_steps:            preset.steps,
+        override_clip_skip:        preset.clip_skip,
+        resolution_preset:         "(preset)",
+        override_width:            preset.width,
+        override_height:           preset.height,
+        batch_size:                preset.batch_size ?? 1,
+      };
+
+      for (const [wn, val] of Object.entries(map)) {
+        const w = getW(wn);
+        if (w && val !== undefined) { w.value = val; w.callback?.(val); }
+      }
+    }
+  } catch {}
+  // Persist as last used model
+  try { await apiFetch("/cwk/last_model", { method: "POST", body: JSON.stringify({ model_name: modelName }) }); } catch {}
+  node.setDirtyCanvas(true);
 }
 
 // ─── Extension ────────────────────────────────────────────────────────────────
@@ -602,19 +635,45 @@ app.registerExtension({
       node._cwkPreset     = {};
       node._cwkModelName  = null;
 
-      // ── Set custom node colors ─────────────────────────────────────────────
-      node.color   = NODE_COLOR;    // body
-      node.bgcolor = NODE_BGCOLOR;  // title bar
+      node.color   = NODE_COLOR;
+      node.bgcolor = NODE_BGCOLOR;
 
       setTimeout(() => {
         for (const w of node.widgets ?? []) {
           w.type = "hidden"; w.hidden = true;
           w.computeSize = () => [0, -4];
         }
+        // ── Ensure all combo widgets start with valid defaults ──
+        const getW = name => node.widgets?.find(w => w.name === name);
+        const rp = getW("resolution_preset");
+        if (rp) rp.value = "(preset)";
+        const bs = getW("batch_size");
+        if (bs) bs.value = 1;
+        const ct = getW("override_clip_type");
+        if (ct) ct.value = "(preset)";
+        const ms = getW("override_model_sampling");
+        if (ms) ms.value = "(preset)";
+
         node.size[0] = Math.max(node.size[0], NODE_MIN_W);
         node.size[1] = calcNodeHeight(node);
         app.canvas.setDirty(true, true);
       }, 0);
+
+      // ── NEW: Restore last-used model on node creation ────────────────────
+      setTimeout(async () => {
+        // Only auto-restore if no model is already loaded (fresh node)
+        if (node._cwkModelName) return;
+        try {
+          const res = await fetch("/cwk/last_model");
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.model_name) {
+            await _loadModelIntoNode(node, data.model_name);
+          }
+        } catch (e) {
+          console.warn("[CWK] Could not restore last model:", e);
+        }
+      }, 100);
 
       node.onDrawForeground = function (ctx) { drawNode(this, ctx); };
 
@@ -625,23 +684,28 @@ app.registerExtension({
 
       node.onMouseDown = function (e, pos) {
         const btnKey = hitTestButton(this, pos[0], pos[1]);
-        if (btnKey) {
-          handleButtonClick(node, btnKey);
-          return true;
-        }
-
+        if (btnKey) { handleButtonClick(node, btnKey); return true; }
         const hit = hitTestRow(this, pos[0], pos[1]);
         if (!hit || hit.part === null) return false;
-
         const { rowIdx, part } = hit;
         const row = INFO_ROWS[rowIdx];
         const cur = node._cwkPreset?.[row.key];
-
         if (row.type === "list") {
-          openDropdown(node, rowIdx, cur, val => applyRowValue(node, rowIdx, val));
+          openDropdown(node, rowIdx, cur, val => {
+            applyRowValue(node, rowIdx, val);
+            // ── NEW: If resolution preset changed, update width/height ──
+            if (row.key === "res_preset" && val !== "(preset)") {
+              const dims = RES_PRESETS_MAP[val];
+              if (dims && dims.width > 0 && dims.height > 0) {
+                const widthIdx  = INFO_ROWS.findIndex(r => r.key === "width");
+                const heightIdx = INFO_ROWS.findIndex(r => r.key === "height");
+                if (widthIdx >= 0)  applyRowValue(node, widthIdx,  dims.width);
+                if (heightIdx >= 0) applyRowValue(node, heightIdx, dims.height);
+              }
+            }
+          });
           return true;
         }
-
         if (part === "left") {
           const step = row.type === "float" ? 0.1 : 1;
           applyRowValue(node, rowIdx, clampValue(row, Number(cur) - step));
@@ -652,12 +716,10 @@ app.registerExtension({
           applyRowValue(node, rowIdx, clampValue(row, Number(cur) + step));
           return true;
         }
-
         if (part === "center") {
-          openNumberModal(row, cur, e.clientX, e.clientY, val => applyRowValue(node, rowIdx, val));
+          openInlineNumberEditor(node, rowIdx, cur, val => applyRowValue(node, rowIdx, val));
           return true;
         }
-
         return false;
       };
 
@@ -665,25 +727,84 @@ app.registerExtension({
         const btnKey = hitTestButton(this, pos[0], pos[1]);
         if (btnKey) {
           if (!node._cwkHover || node._cwkHover.key !== btnKey) {
-            node._cwkHover = { key: btnKey };
-            app.canvas.setDirty(true, false);
+            node._cwkHover = { key: btnKey }; app.canvas.setDirty(true, false);
           }
           return;
         }
         const hit    = hitTestRow(this, pos[0], pos[1]);
         const newHov = hit ? { rowIdx: hit.rowIdx, part: hit.part } : null;
         if (JSON.stringify(node._cwkHover) !== JSON.stringify(newHov)) {
-          node._cwkHover = newHov;
-          app.canvas.setDirty(true, false);
+          node._cwkHover = newHov; app.canvas.setDirty(true, false);
         }
       };
 
       node.onMouseLeave = function () {
-        if (node._cwkHover !== null) {
-          node._cwkHover = null;
-          app.canvas.setDirty(true, false);
-        }
+        if (node._cwkHover !== null) { node._cwkHover = null; app.canvas.setDirty(true, false); }
       };
+    };
+  },
+
+  // ── NEW: Handle image-with-metadata dropped onto canvas ──────────────────
+  async nodeCreated(node) {
+    if (node.comfyClass !== NODE_TYPE) return;
+
+    // Hook into handleFile to intercept image drops with PNG metadata
+    const origHandleFile = node.handleFile?.bind(node);
+    node.handleFile = async function (file) {
+      if (origHandleFile) origHandleFile(file);
+      if (!file || !file.type?.startsWith("image/")) return;
+
+      try {
+        // Read PNG text chunks for ComfyUI workflow/prompt metadata
+        const buffer = await file.arrayBuffer();
+        const text   = new TextDecoder().decode(buffer);
+
+        // Try to find a ComfyUI-style "prompt" JSON embedded in the image
+        let promptData = null;
+        // Method 1: look for the "prompt" PNG tEXt chunk pattern
+        const promptMatch = text.match(/"prompt"\s*:\s*(\{[\s\S]*\})/);
+        if (promptMatch) {
+          try { promptData = JSON.parse(promptMatch[1]); } catch {}
+        }
+        // Method 2: look for A1111-style parameters in EXIF
+        const a1111Match = text.match(/(?:parameters|EXIF)\s*[:\n]([\s\S]*?)(?:Negative prompt:|$)/i);
+
+        if (promptData) {
+          // ComfyUI workflow metadata — find the checkpoint loader node
+          for (const [, nodeData] of Object.entries(promptData)) {
+            const inputs = nodeData?.inputs;
+            if (!inputs) continue;
+            const ckpt = inputs.ckpt_name || inputs.model_name;
+            if (ckpt) {
+              await _loadModelIntoNode(node, ckpt);
+              return;
+            }
+          }
+        }
+
+        // Try to find model name from A1111-style "Model: xxx" or "Model hash: xxx"
+        const modelMatch = text.match(/Model:\s*([^\n,]+)/i);
+        if (modelMatch) {
+          const modelHint = modelMatch[1].trim();
+          // Try to find a matching checkpoint by partial name
+          try {
+            const listRes = await fetch("/cwk/models");
+            if (listRes.ok) {
+              const models = await listRes.json();
+              const match = models.find(m =>
+                m.name.toLowerCase().includes(modelHint.toLowerCase()) ||
+                modelHint.toLowerCase().includes(m.name.replace(/^.*[/\\]/, "").replace(/\.[^.]+$/, "").toLowerCase())
+              );
+              if (match) {
+                await _loadModelIntoNode(node, match.name);
+                return;
+              }
+            }
+          } catch {}
+        }
+      } catch (e) {
+        console.warn("[CWK] Could not parse dropped image metadata:", e);
+      }
     };
   },
 });
@@ -706,36 +827,7 @@ function handleButtonClick(node, key) {
 
   if (key === "load") {
     getPanel().open(async modelName => {
-      const mw = getW("model_name");
-      if (mw) { mw.value = modelName; mw.callback?.(modelName); }
-      node._cwkModelName = modelName;
-      try {
-        const res = await fetch(`/cwk/civitai/meta?model=${encodeURIComponent(modelName)}`);
-        if (res.ok) node._cwkMeta = await res.json();
-      } catch {}
-      try {
-        const { preset } = await apiFetch(`/cwk/preset?model=${encodeURIComponent(modelName)}`);
-        if (preset) {
-          node._cwkPreset = { ...preset };
-          const map = {
-            override_sampler:   preset.sampler_name,
-            override_scheduler: preset.scheduler,
-            override_cfg:       preset.cfg,
-            override_steps:     preset.steps,
-            override_clip_skip: preset.clip_skip,
-            override_width:     preset.width,
-            override_height:    preset.height,
-            override_rng:       preset.rng,
-            override_clip_name: preset.clip_name,
-            override_vae_name:  preset.vae_name,
-          };
-          for (const [wn, val] of Object.entries(map)) {
-            const w = getW(wn);
-            if (w && val !== undefined) { w.value = val; w.callback?.(val); }
-          }
-        }
-      } catch {}
-      node.setDirtyCanvas(true);
+      await _loadModelIntoNode(node, modelName);
     });
     return;
   }
@@ -746,18 +838,23 @@ function handleButtonClick(node, key) {
     apiFetch(`/cwk/preset?model=${encodeURIComponent(modelName)}`)
       .then(({ preset }) => {
         if (!preset) return;
-        node._cwkPreset = { ...preset };
+        node._cwkPreset = { ...preset, batch_size: node._cwkPreset?.batch_size ?? 1,
+                            res_preset: "(preset)", model_sampling: preset.model_sampling ?? "eps" };
         const map = {
-          override_sampler:   preset.sampler_name ?? "(preset)",
-          override_scheduler: preset.scheduler    ?? "(preset)",
-          override_cfg:       preset.cfg          ?? 0,
-          override_steps:     preset.steps        ?? 0,
-          override_clip_skip: preset.clip_skip    ?? 0,
-          override_width:     preset.width        ?? 0,
-          override_height:    preset.height       ?? 0,
-          override_rng:       preset.rng          ?? "(preset)",
-          override_clip_name: preset.clip_name    ?? "(preset)",
-          override_vae_name:  preset.vae_name     ?? "(preset)",
+          override_rng:              preset.rng              ?? "(preset)",
+          override_model_sampling:   preset.model_sampling   ?? "eps",
+          override_clip_name:        preset.clip_name        ?? "(preset)",
+          override_clip_type:        preset.clip_type        ?? "(preset)",
+          override_vae_name:         preset.vae_name         ?? "(preset)",
+          override_sampler:          preset.sampler_name     ?? "(preset)",
+          override_scheduler:        preset.scheduler        ?? "(preset)",
+          override_cfg:              preset.cfg              ?? 0,
+          override_steps:            preset.steps            ?? 0,
+          override_clip_skip:        preset.clip_skip        ?? 0,
+          resolution_preset:         "(preset)",
+          override_width:            preset.width            ?? 0,
+          override_height:           preset.height           ?? 0,
+          batch_size:                preset.batch_size        ?? 1,
         };
         for (const [wn, val] of Object.entries(map)) {
           const w = getW(wn);
@@ -774,16 +871,18 @@ function handleButtonClick(node, key) {
     if (!modelName) { alert("No model loaded."); return; }
     const p      = node._cwkPreset ?? {};
     const preset = {};
-    if (p.sampler_name && p.sampler_name !== "(preset)") preset.sampler_name = p.sampler_name;
-    if (p.scheduler    && p.scheduler    !== "(preset)") preset.scheduler    = p.scheduler;
-    if (p.cfg      != null && Number(p.cfg)       !== 0) preset.cfg          = Number(p.cfg);
-    if (p.steps    != null && Number(p.steps)     !== 0) preset.steps        = Number(p.steps);
-    if (p.clip_skip!= null && Number(p.clip_skip) !== 0) preset.clip_skip    = Number(p.clip_skip);
-    if (p.width    != null && Number(p.width)     !== 0) preset.width        = Number(p.width);
-    if (p.height   != null && Number(p.height)    !== 0) preset.height       = Number(p.height);
-    if (p.rng      && p.rng !== "(preset)")               preset.rng          = p.rng;
-    if (p.clip_name)                                      preset.clip_name    = p.clip_name;
-    if (p.vae_name)                                       preset.vae_name     = p.vae_name;
+    if (p.sampler_name && p.sampler_name !== "(preset)") preset.sampler_name    = p.sampler_name;
+    if (p.scheduler    && p.scheduler    !== "(preset)") preset.scheduler       = p.scheduler;
+    if (p.cfg      != null && Number(p.cfg)       !== 0) preset.cfg             = Number(p.cfg);
+    if (p.steps    != null && Number(p.steps)     !== 0) preset.steps           = Number(p.steps);
+    if (p.clip_skip!= null && Number(p.clip_skip) !== 0) preset.clip_skip       = Number(p.clip_skip);
+    if (p.width    != null && Number(p.width)     !== 0) preset.width           = Number(p.width);
+    if (p.height   != null && Number(p.height)    !== 0) preset.height          = Number(p.height);
+    if (p.rng      && p.rng !== "(preset)")               preset.rng             = p.rng;
+    if (p.model_sampling && p.model_sampling !== "(preset)") preset.model_sampling = p.model_sampling;
+    if (p.clip_name)                                      preset.clip_name       = p.clip_name;
+    if (p.clip_type && p.clip_type !== "(preset)")        preset.clip_type       = p.clip_type;
+    if (p.vae_name)                                       preset.vae_name        = p.vae_name;
     apiFetch("/cwk/preset", {
       method: "POST",
       body:   JSON.stringify({ model: modelName, preset }),

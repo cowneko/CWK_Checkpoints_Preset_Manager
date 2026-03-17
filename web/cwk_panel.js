@@ -12,7 +12,8 @@ const DEFAULTS = {
   sampler_name: "euler", scheduler: "normal",
   cfg: 7.0, steps: 20, clip_skip: -2,
   width: 1024, height: 1024, rng: "cpu",
-  clip_name: "embedded", vae_name: "embedded",
+  model_sampling: "eps",
+  clip_name: "embedded", clip_type: "stable_diffusion", vae_name: "embedded",
 };
 
 const NSFW_R = 2;
@@ -30,6 +31,7 @@ function isNsfwModel(model) {
 const BASE_MODEL_FILTERS = [
   { label: "All Types",   match: null },
   { label: "SDXL",        match: ["sdxl"] },
+  { label: "SD15",        match: ["sd 1.5"] },
   { label: "Illustrious", match: ["illustrious"] },
   { label: "Pony",        match: ["pony"] },
   { label: "NoobAI",      match: ["noobai"] },
@@ -37,6 +39,7 @@ const BASE_MODEL_FILTERS = [
   { label: "Flux",        match: ["flux"] },
   { label: "Chroma",      match: ["chroma"] },
   { label: "Wan",         match: ["wan video", "wan"] },
+  { label: "ZImage",      match: ["zimage"] },
   { label: "Others",      match: "__others__" },
 ];
 
@@ -197,9 +200,19 @@ export class ModelBrowserPanel {
               <select class="cwk-sidebar-input" id="sb-rng" disabled>
                 <option value="cpu">cpu</option>
                 <option value="gpu">gpu</option>
-				<option value="nv">nv</option>
+                <option value="nv">nv</option>
               </select>
             </div>
+          </div>
+          <div class="cwk-sidebar-section">
+            <div class="cwk-sidebar-title">Model Sampling:</div>
+            <select class="cwk-sidebar-input" id="sb-model-sampling" disabled>
+              <option value="eps">eps</option>
+              <option value="v_prediction">v_prediction</option>
+              <option value="lcm">lcm</option>
+              <option value="x0">x0</option>
+              <option value="img_to_img">img_to_img</option>
+            </select>
           </div>
           <div class="cwk-sidebar-section">
             <div class="cwk-sidebar-title">Resolution:</div>
@@ -223,6 +236,12 @@ export class ModelBrowserPanel {
             <div class="cwk-sidebar-title">CLIP:</div>
             <select class="cwk-sidebar-input" id="sb-clip-name" disabled>
               <option value="embedded">embedded</option>
+            </select>
+          </div>
+          <div class="cwk-sidebar-section">
+            <div class="cwk-sidebar-title">CLIP Type:</div>
+            <select class="cwk-sidebar-input" id="sb-clip-type" disabled>
+              <option value="stable_diffusion">stable_diffusion</option>
             </select>
           </div>
           <div class="cwk-sidebar-section">
@@ -376,6 +395,10 @@ export class ModelBrowserPanel {
       const schedulers = (inputs?.optional?.override_scheduler?.[0] ?? []).filter(v => v !== "(preset)");
       this._fillSelect("sb-sampler",   samplers);
       this._fillSelect("sb-scheduler", schedulers);
+      const clipTypes = (inputs?.optional?.override_clip_type?.[0] ?? []).filter(v => v !== "(preset)");
+      if (clipTypes.length) this._fillSelect("sb-clip-type", clipTypes);
+      const modelSamplingOpts = (inputs?.optional?.override_model_sampling?.[0] ?? []).filter(v => v !== "(preset)");
+      if (modelSamplingOpts.length) this._fillSelect("sb-model-sampling", modelSamplingOpts);
     } catch {
       this._fillSelect("sb-sampler",   ["euler","euler_ancestral","dpmpp_2m","dpmpp_sde","ddim"]);
       this._fillSelect("sb-scheduler", ["normal","karras","exponential","sgm_uniform","simple"]);
@@ -560,7 +583,7 @@ export class ModelBrowserPanel {
     for (const m of newModels) { m._resolving = true; this._updateCard(m); }
     this._setProgress(0, total);
 
-    let resolved = 0, thumbsFound = 0;
+    let resolved = 0, thumbsFound = 0, presetsPopulated = 0;
 
     try {
       const response = await fetch("/cwk/civitai/fetch/stream", {
@@ -608,22 +631,32 @@ export class ModelBrowserPanel {
             model.civitai    = p.info;
             model._resolving = false;
             if (p.info?.thumbnail) thumbsFound++;
+            if (p.preset_extracted) {
+              presetsPopulated++;
+              model.preset = { ...(model.preset || {}), ...p.preset_extracted };
+            }
             this._updateCard(model);
           }
           resolved++;
           this._setProgress(resolved, total);
           this._setStatus(
             `Fetching… ${resolved} / ${total}` +
-            (thumbsFound ? ` · ${thumbsFound} 🖼` : "")
+            (thumbsFound ? ` · ${thumbsFound} 🖼` : "") +
+            (presetsPopulated ? ` · ${presetsPopulated} presets` : "")
           );
         }
       }
 
       this._setStatus(
         thumbsFound
-          ? `✓ ${thumbsFound} thumbnail${thumbsFound !== 1 ? "s" : ""} fetched for new models`
+          ? `✓ ${thumbsFound} thumbnail${thumbsFound !== 1 ? "s" : ""} fetched for new models` +
+            (presetsPopulated ? ` · ${presetsPopulated} preset${presetsPopulated !== 1 ? "s" : ""} auto-populated` : "")
           : `✓ No thumbnails found for new models (not on CivitAI)`
       );
+
+      // ── Auto-reload model list to refresh sidebar presets ─────────────
+      await this._reloadModels();
+
     } catch (e) {
       if (e.name !== "AbortError") {
         this._setStatus(`✗ Thumbnail fetch failed: ${e.message}`, true);
@@ -930,11 +963,13 @@ export class ModelBrowserPanel {
     document.getElementById("sb-clip-skip").value        = p.clip_skip;
     document.getElementById("sb-width").value            = p.width;
     document.getElementById("sb-height").value           = p.height;
-    this._setSelectValue("sb-sampler",   p.sampler_name);
-    this._setSelectValue("sb-scheduler", p.scheduler);
-    this._setSelectValue("sb-rng",       p.rng ?? "cpu");
-    this._setSelectValue("sb-clip-name", p.clip_name ?? "embedded");
-    this._setSelectValue("sb-vae-name",  p.vae_name  ?? "embedded");
+    this._setSelectValue("sb-sampler",         p.sampler_name);
+    this._setSelectValue("sb-scheduler",       p.scheduler);
+    this._setSelectValue("sb-rng",             p.rng ?? "cpu");
+    this._setSelectValue("sb-model-sampling",  p.model_sampling ?? "eps");
+    this._setSelectValue("sb-clip-name",       p.clip_name ?? "embedded");
+    this._setSelectValue("sb-clip-type",       p.clip_type ?? "stable_diffusion");
+    this._setSelectValue("sb-vae-name",        p.vae_name  ?? "embedded");
     this._setStatus(name);
   }
 
@@ -947,16 +982,18 @@ export class ModelBrowserPanel {
 
   _getSidebarPreset() {
     return {
-      sampler_name: document.getElementById("sb-sampler").value,
-      scheduler:    document.getElementById("sb-scheduler").value,
-      cfg:          parseFloat(document.getElementById("sb-cfg").value),
-      steps:        parseInt(document.getElementById("sb-steps").value, 10),
-      clip_skip:    parseInt(document.getElementById("sb-clip-skip").value, 10),
-      rng:          document.getElementById("sb-rng").value,
-      width:        parseInt(document.getElementById("sb-width").value, 10),
-      height:       parseInt(document.getElementById("sb-height").value, 10),
-      clip_name:    document.getElementById("sb-clip-name").value,
-      vae_name:     document.getElementById("sb-vae-name").value,
+      sampler_name:   document.getElementById("sb-sampler").value,
+      scheduler:      document.getElementById("sb-scheduler").value,
+      cfg:            parseFloat(document.getElementById("sb-cfg").value),
+      steps:          parseInt(document.getElementById("sb-steps").value, 10),
+      clip_skip:      parseInt(document.getElementById("sb-clip-skip").value, 10),
+      rng:            document.getElementById("sb-rng").value,
+      model_sampling: document.getElementById("sb-model-sampling").value,
+      width:          parseInt(document.getElementById("sb-width").value, 10),
+      height:         parseInt(document.getElementById("sb-height").value, 10),
+      clip_name:      document.getElementById("sb-clip-name").value,
+      clip_type:      document.getElementById("sb-clip-type").value,
+      vae_name:       document.getElementById("sb-vae-name").value,
     };
   }
 
@@ -965,8 +1002,8 @@ export class ModelBrowserPanel {
   _setEditMode(on) {
     this._editMode = on;
     for (const id of ["sb-sampler","sb-scheduler","sb-cfg","sb-steps",
-                       "sb-clip-skip","sb-rng","sb-width","sb-height",
-                       "sb-clip-name","sb-vae-name"]) {
+                       "sb-clip-skip","sb-rng","sb-model-sampling","sb-width","sb-height",
+                       "sb-clip-name","sb-clip-type","sb-vae-name"]) {
       const el = document.getElementById(id);
       if (el) el.disabled = !on;
     }
@@ -993,8 +1030,36 @@ export class ModelBrowserPanel {
     this._onLoadCallback?.(this._selected);
     this.hide();
   }
+  
+    async _reloadModels() {
+    try {
+      const freshModels = await apiFetch("/cwk/models");
+      // Preserve in-memory civitai data and resolving state
+      for (const fresh of freshModels) {
+        const existing = this._models.find(m => m.name === fresh.name);
+        if (existing) {
+          // Keep the civitai data we just fetched (it may be newer than server cache)
+          fresh.civitai = existing.civitai || fresh.civitai;
+          fresh._resolving = existing._resolving;
+        }
+      }
+      this._models = freshModels;
+      this._applyFilter(document.getElementById("cwk-search")?.value || "");
+      document.getElementById("cwk-total-count").textContent =
+        `${this._models.length} model${this._models.length !== 1 ? "s" : ""}`;
+      // Re-select the currently selected model to refresh the sidebar
+      if (this._selected) {
+        const stillExists = this._models.find(m => m.name === this._selected);
+        if (stillExists) {
+          this._selectModel(this._selected);
+        }
+      }
+    } catch (e) {
+      console.warn("[CWK] Failed to reload models after fetch:", e);
+    }
+  }
 
-  // ── Check Updates ────────────────────────────────────────────────────────���────
+  // ── Check Updates ──────────────────────────────────────────────────────────────
 
   async _checkUpdates() {
     if (!this._civitaiKey) {
@@ -1061,7 +1126,7 @@ export class ModelBrowserPanel {
     this._renderGrid();
     this._setProgress(0, total);
 
-    let resolved = 0, thumbsFound = 0;
+    let resolved = 0, thumbsFound = 0, presetsPopulated = 0;
 
     try {
       const response = await fetch("/cwk/civitai/fetch/stream", {
@@ -1097,11 +1162,11 @@ export class ModelBrowserPanel {
             this._civitaiKey = "";
             localStorage.removeItem("cwk_civitai_key");
             this._updateKeyLabel();
-            for (const m of this._models) m._resolving = false;
+            for (const m of this._models) { m._resolving = false; }
             this._renderGrid();
             this._setProgress(0, 0);
-            btn.innerHTML = orig; btn.disabled = false; rBtn.disabled = false;
             this._fetchAbort = null;
+            btn.innerHTML = orig; btn.disabled = false; rBtn.disabled = false;
             return;
           }
           if (p.done && !p.model) break outer;
@@ -1111,20 +1176,31 @@ export class ModelBrowserPanel {
             model.civitai    = p.info;
             model._resolving = false;
             if (p.info?.thumbnail) thumbsFound++;
+            if (p.preset_extracted) {
+              presetsPopulated++;
+              // Update the in-memory preset so the sidebar shows new values
+              model.preset = { ...(model.preset || {}), ...p.preset_extracted };
+            }
             this._updateCard(model);
           }
           resolved++;
           this._setProgress(resolved, total);
           this._setStatus(
             `Fetching… ${resolved} / ${total}` +
-            (thumbsFound ? ` · ${thumbsFound} 🖼` : "")
+            (thumbsFound ? ` · ${thumbsFound} 🖼` : "") +
+            (presetsPopulated ? ` · ${presetsPopulated} presets` : "")
           );
         }
       }
       this._setStatus(
         `✓ Done — ${thumbsFound} thumbnail${thumbsFound !== 1 ? "s" : ""} found` +
+        (presetsPopulated ? ` · ${presetsPopulated} preset${presetsPopulated !== 1 ? "s" : ""} auto-populated` : "") +
         (thumbsFound < total ? ` · ${total - thumbsFound} not on CivitAI` : "")
       );
+
+      // ── Auto-reload model list to refresh sidebar presets ─────────────
+      await this._reloadModels();
+
     } catch (e) {
       if (e.name !== "AbortError") {
         this._setStatus(`✗ Fetch failed: ${e.message}`, true);

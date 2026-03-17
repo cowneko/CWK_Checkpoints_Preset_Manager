@@ -13,7 +13,13 @@ import aiohttp
 from aiohttp import web
 
 import folder_paths
-from .nodes import load_presets, save_presets, default_preset, get_clip_list, get_vae_list
+from .nodes import (
+    load_presets, save_presets, default_preset,
+    get_clip_list, get_vae_list,
+    resolve_sampler, resolve_scheduler,
+    get_last_used_model, save_last_used_model,
+    RESOLUTION_PRESETS,
+)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -131,27 +137,41 @@ def _hash_cache_set(path: str, sha256: str) -> None:
 
 def _all_models() -> list:
     models = []
+    seen = set()
     for name in folder_paths.get_filename_list("checkpoints"):
-        models.append({"name": name, "type": "checkpoint"})
+        model_type = "gguf" if name.lower().endswith(".gguf") else "checkpoint"
+        models.append({"name": name, "type": model_type})
+        seen.add(name)
     try:
         for name in folder_paths.get_filename_list("diffusion_models"):
-            models.append({"name": name, "type": "diffusion_model"})
+            if name in seen:
+                continue
+            model_type = "gguf" if name.lower().endswith(".gguf") else "diffusion_model"
+            models.append({"name": name, "type": model_type})
+            seen.add(name)
+    except Exception:
+        pass
+    # Also include .gguf files from city96's "unet_gguf" folder type
+    try:
+        for name in folder_paths.get_filename_list("unet_gguf"):
+            if name in seen:
+                continue
+            models.append({"name": name, "type": "gguf"})
+            seen.add(name)
     except Exception:
         pass
     return models
 
 
-def _clean_name(filename: str) -> str:
-    return os.path.splitext(os.path.basename(filename))[0]
-
-
 def _full_path(model_name: str) -> Optional[str]:
-    result = (
-        folder_paths.get_full_path("checkpoints",      model_name) or
-        folder_paths.get_full_path("diffusion_models", model_name)
-    )
-    if result and os.path.exists(result):
-        return result
+    # Check all folder types including unet_gguf
+    for folder_type in ("checkpoints", "diffusion_models", "unet_gguf"):
+        try:
+            result = folder_paths.get_full_path(folder_type, model_name)
+            if result and os.path.exists(result):
+                return result
+        except Exception:
+            pass
 
     basename = os.path.basename(model_name)
     for folder_type in ("checkpoints", "diffusion_models"):
@@ -165,6 +185,9 @@ def _full_path(model_name: str) -> Optional[str]:
                     return os.path.join(dirpath, basename)
     return None
 
+def _clean_name(filename: str) -> str:
+    return os.path.splitext(os.path.basename(filename))[0]
+
 
 def _model_save_dir(model_name: str) -> str:
     p = _full_path(model_name)
@@ -173,11 +196,10 @@ def _model_save_dir(model_name: str) -> str:
     dirs = folder_paths.get_folder_paths("checkpoints")
     return dirs[0] if dirs else os.getcwd()
 
-
 def _bust_folder_cache() -> None:
     """Force ComfyUI to rescan model folders on the next list request."""
     try:
-        for folder_type in ("checkpoints", "diffusion_models"):
+        for folder_type in ("checkpoints", "diffusion_models", "unet_gguf"):
             folder_paths.filename_list_cache.pop(folder_type, None)
     except Exception as e:
         print(f"[CWK] Warning: could not bust folder_paths cache: {e}")
@@ -307,19 +329,142 @@ async def _lookup_by_path(abs_path: str, model_name: str, session, loop) -> dict
 
 
 def _keep_manual_overrides(new_info: dict, existing: dict) -> dict:
+    # Preserve local thumbnail
     if existing.get("thumbnail", "").startswith("/cwk/local_thumbnails/"):
         new_info["thumbnail"] = existing["thumbnail"]
+    # Preserve manual NSFW override
     if existing.get("nsfw_manual") is not None:
         new_info["nsfw_manual"] = existing["nsfw_manual"]
+    # Preserve favorite flag
     if existing.get("favorite"):
         new_info["favorite"] = True
+    # Preserve tags if new data doesn't have them
     existing_tags = existing.get("tags")
     if isinstance(existing_tags, list) and existing_tags and not new_info.get("tags"):
         new_info["tags"] = existing_tags
+    # Preserve update check results
     if existing.get("update_available"):
         new_info["update_available"] = existing["update_available"]
         new_info["latest_version_id"] = existing.get("latest_version_id")
+
+    # ── NEW: Preserve manually-edited fields ──────────────────────────────────
+    manual_fields = existing.get("_manual_overrides", [])
+    if isinstance(manual_fields, list):
+        for field in manual_fields:
+            if field in existing:
+                new_info[field] = existing[field]
+        if manual_fields:
+            new_info["_manual_overrides"] = manual_fields
+
     return new_info
+
+
+# ─── Preset auto-population from CivitAI image metadata ───────────────────────
+
+_PRESET_META_KEYS = ["sampler", "scheduler", "cfgScale", "steps", "clipSkip"]
+_PRESET_SIZE_KEYS = ["Size", "size"]
+
+
+def _extract_best_image_metadata(images: list) -> dict:
+    """
+    Pick the example image with the most generation metadata available
+    and return a preset-compatible dict.
+    """
+    if not images:
+        return {}
+
+    best_img  = None
+    best_count = 0
+
+    for img in images:
+        meta = img.get("meta") or img.get("metadata") or {}
+        if not meta or not isinstance(meta, dict):
+            continue
+        count = sum(1 for k in _PRESET_META_KEYS if meta.get(k) is not None)
+        # Also count size
+        for sk in _PRESET_SIZE_KEYS:
+            if meta.get(sk):
+                count += 1
+                break
+        if count > best_count:
+            best_count = count
+            best_img = meta
+
+    if not best_img or best_count == 0:
+        return {}
+
+    preset = {}
+
+    # Sampler — resolve through fallback system
+    raw_sampler = best_img.get("sampler")
+    if raw_sampler and isinstance(raw_sampler, str) and raw_sampler.strip():
+        preset["sampler_name"] = resolve_sampler(raw_sampler.strip())
+
+    # Scheduler — resolve through fallback system
+    raw_scheduler = best_img.get("scheduler")
+    if raw_scheduler and isinstance(raw_scheduler, str) and raw_scheduler.strip():
+        preset["scheduler"] = resolve_scheduler(raw_scheduler.strip())
+
+    # CFG
+    cfg_val = best_img.get("cfgScale")
+    if cfg_val is not None:
+        try:
+            preset["cfg"] = round(float(cfg_val), 2)
+        except (ValueError, TypeError):
+            pass
+
+    # Steps
+    steps_val = best_img.get("steps")
+    if steps_val is not None:
+        try:
+            preset["steps"] = int(steps_val)
+        except (ValueError, TypeError):
+            pass
+
+    # Clip skip
+    clip_val = best_img.get("clipSkip")
+    if clip_val is not None:
+        try:
+            cs = int(clip_val)
+            preset["clip_skip"] = -cs if cs > 0 else cs
+        except (ValueError, TypeError):
+            pass
+
+    # Resolution from "Size" field (e.g. "832x1216")
+    for sk in _PRESET_SIZE_KEYS:
+        size_str = best_img.get(sk)
+        if size_str and isinstance(size_str, str) and "x" in size_str.lower():
+            parts = size_str.lower().split("x")
+            if len(parts) == 2:
+                try:
+                    w = int(parts[0].strip())
+                    h = int(parts[1].strip())
+                    if 64 <= w <= 8192 and 64 <= h <= 8192:
+                        preset["width"]  = w
+                        preset["height"] = h
+                except (ValueError, TypeError):
+                    pass
+            break
+
+    return preset
+
+
+def _auto_populate_preset(model_name: str, images: list) -> bool:
+    """
+    Extract generation metadata from CivitAI example images and save
+    as a preset for the model. Returns True if a preset was written.
+    """
+    extracted = _extract_best_image_metadata(images)
+    if not extracted:
+        return False
+
+    presets  = load_presets()
+    existing = presets.get(model_name, default_preset())
+    existing.update(extracted)
+    presets[model_name] = existing
+    save_presets(presets)
+    print(f"[CWK] Auto-populated preset for {model_name}: {extracted}")
+    return True
 
 
 # ─── SSE helper ───────────────────────────────────────────────────────────────
@@ -444,6 +589,7 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
     sem         = asyncio.Semaphore(_CONCURRENCY)
     completed   = [0]
     auth_failed = [False]
+    presets_populated = [0]
 
     try:
         async with aiohttp.ClientSession(headers=_headers(api_key)) as session:
@@ -456,6 +602,14 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
 
                 if not force and not rebuild and existing.get("thumbnail"):
                     completed[0] += 1
+                    # Even for cached models, try to auto-populate preset if
+                    # the model doesn't have one yet
+                    images = existing.get("images", [])
+                    if images:
+                        current_presets = load_presets()
+                        if name not in current_presets:
+                            if _auto_populate_preset(name, images):
+                                presets_populated[0] += 1
                     await _sse(resp, {
                         "model": name, "info": existing,
                         "index": completed[0], "total": total,
@@ -483,6 +637,13 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
 
                 info = _keep_manual_overrides(info, existing)
                 _save_meta(name, info)
+
+                # Auto-populate preset from example images
+                images = info.get("images", [])
+                if images:
+                    if _auto_populate_preset(name, images):
+                        presets_populated[0] += 1
+
                 completed[0] += 1
                 await _sse(resp, {
                     "model": name, "info": info,
@@ -497,7 +658,10 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
 
     # Always send the terminal done event and close cleanly
     if not auth_failed[0]:
-        await _sse(resp, {"done": True, "total": total})
+        await _sse(resp, {
+            "done": True, "total": total,
+            "presets_populated": presets_populated[0],
+        })
 
     try:
         await resp.write_eof()
@@ -790,7 +954,17 @@ async def handle_refresh_civitai(req: web.Request) -> web.Response:
         existing = _load_meta(name)
         info     = _keep_manual_overrides(info, existing)
         _save_meta(name, info)
-        return web.json_response({"ok": True, "info": info})
+
+        # Auto-populate preset from example images
+        images = info.get("images", [])
+        preset_populated = False
+        if images:
+            preset_populated = _auto_populate_preset(name, images)
+
+        return web.json_response({
+            "ok": True, "info": info,
+            "preset_populated": preset_populated,
+        })
     except CivitAIAuthError as e:
         return web.json_response({"ok": False, "error": str(e)}, status=403)
     except Exception as e:
@@ -912,6 +1086,12 @@ async def handle_download_version(req: web.Request) -> web.StreamResponse:
                             registered_name = rel
                             break
                 _save_meta(registered_name, info)
+
+                # Auto-populate preset for the newly downloaded model
+                images = info.get("images", [])
+                if images:
+                    _auto_populate_preset(registered_name, images)
+
                 await _sse(resp, {"progress": 100, "done": True, "civitai": info, "registered_name": registered_name})
             else:
                 await _sse(resp, {"progress": 100, "done": True})
@@ -940,7 +1120,87 @@ async def handle_download_version(req: web.Request) -> web.StreamResponse:
         pass
 
     return resp
+    
 
+async def handle_last_model(req: web.Request) -> web.Response:
+    """GET /cwk/last_model — Return the last-used model name and its preset + meta."""
+    model_name = get_last_used_model()
+    if not model_name:
+        return web.json_response({"model_name": None})
+    presets = load_presets()
+    preset  = presets.get(model_name, default_preset())
+    meta    = _load_meta(model_name)
+    return web.json_response({
+        "model_name": model_name,
+        "preset":     preset,
+        "meta":       meta if meta else None,
+    })
+
+
+async def handle_save_last_model(req: web.Request) -> web.Response:
+    """POST /cwk/last_model — Persist the last-used model name."""
+    try:
+        body = await req.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    model_name = body.get("model_name", "")
+    if not model_name:
+        return web.json_response({"error": "model_name required"}, status=400)
+    save_last_used_model(model_name)
+    return web.json_response({"ok": True})
+
+
+async def handle_resolution_presets(req: web.Request) -> web.Response:
+    """GET /cwk/resolution_presets — Return all resolution preset labels and values."""
+    result = []
+    for label, (w, h) in RESOLUTION_PRESETS.items():
+        result.append({"label": label, "width": w, "height": h})
+    return web.json_response(result)
+    
+# ─── Manual metadata edit endpoint ────────────────────────────────────────
+
+async def handle_edit_meta(req: web.Request) -> web.Response:
+    """POST /cwk/civitai/meta/edit — Manually set metadata fields for models
+    that don't have CivitAI data (or override existing values).
+    Accepted fields: civitai_name, version_name, base_model.
+    These are flagged as manual overrides so they survive CivitAI refreshes."""
+    try:
+        body = await req.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    model_name = body.get("model", "")
+    if not model_name:
+        return web.json_response({"error": "model required"}, status=400)
+
+    edits = body.get("edits", {})
+    if not edits or not isinstance(edits, dict):
+        return web.json_response({"error": "edits required"}, status=400)
+
+    ALLOWED_FIELDS = {"civitai_name", "version_name", "base_model"}
+    filtered = {k: v for k, v in edits.items() if k in ALLOWED_FIELDS and isinstance(v, str)}
+    if not filtered:
+        return web.json_response({"error": "no valid fields to edit"}, status=400)
+
+    meta = _load_meta(model_name)
+
+    # Apply edits
+    for key, val in filtered.items():
+        meta[key] = val.strip()
+
+    # Track which fields were manually overridden so they survive CivitAI refreshes
+    manual = meta.get("_manual_overrides", [])
+    if not isinstance(manual, list):
+        manual = []
+    for key in filtered:
+        if key not in manual:
+            manual.append(key)
+    meta["_manual_overrides"] = manual
+
+    _save_meta(model_name, meta)
+
+    print(f"[CWK] Manual metadata edit for {model_name}: {filtered}")
+    return web.json_response({"ok": True, "meta": meta})    
 
 # ─── Route registration ───────────────────────────────────────────────────────
 
@@ -970,4 +1230,8 @@ def register_routes(app: web.Application) -> None:
     r.add_get   ("/cwk/civitai/meta",                 handle_get_meta)
     r.add_get   ("/cwk/clips",                        handle_list_clips)
     r.add_get   ("/cwk/vaes",                         handle_list_vaes)
+    r.add_get   ("/cwk/last_model",                   handle_last_model)
+    r.add_post  ("/cwk/last_model",                   handle_save_last_model)
+    r.add_get   ("/cwk/resolution_presets",           handle_resolution_presets)
+    r.add_post  ("/cwk/civitai/meta/edit",            handle_edit_meta)
     print("[CWK_PresetManager] Routes registered.")

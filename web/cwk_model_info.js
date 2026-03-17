@@ -26,6 +26,20 @@ function _isVideo(url) {
 // Only blur X and above (level >= 3)
 const _INFO_NSFW_BLUR = 3;
 
+// ─── Known base model values for the dropdown ─────────────────────────────────
+const _BASE_MODEL_OPTIONS = [
+  "SDXL 1.0", "SDXL Turbo", "SDXL Lightning",
+  "SD 1.5", "SD 1.5 LCM", "SD 1.5 Hyper",
+  "Illustrious", "NoobAI",
+  "Pony",
+  "Flux.1 D", "Flux.1 S",
+  "Chroma",
+  "Wan Video",
+  "Qwen",
+  "ZImageBase", "ZImageTurbo",
+  "Other",
+];
+
 function _makeOverlay() {
   const el = document.createElement("div");
   el.style.cssText = `
@@ -102,6 +116,7 @@ function _injectInfoStyles() {
     .cwk-info-label {
       font-size:10px; color:#6c7086; font-weight:700;
       text-transform:uppercase; letter-spacing:.05em; margin-bottom:4px;
+      display:flex; align-items:center; gap:6px;
     }
     .cwk-info-value {
       font-size:13px; color:#cdd6f4; font-weight:500;
@@ -152,6 +167,71 @@ function _injectInfoStyles() {
     }
     .cwk-info-eye-btn:hover { background:rgba(137,180,250,.3); }
 
+    /* Metadata button — bottom-right of each image card */
+    .cwk-info-meta-btn {
+      position:absolute; bottom:5px; right:5px;
+      background:rgba(20,24,36,.85); border:1px solid #313552;
+      border-radius:4px; padding:2px 6px; font-size:11px;
+      cursor:pointer; z-index:2; color:#89b4fa;
+      transition:background .15s, color .15s; line-height:1.4;
+      pointer-events:all;
+    }
+    .cwk-info-meta-btn:hover { background:rgba(137,180,250,.25); color:#cdd6f4; }
+
+    /* Metadata popup overlay */
+    .cwk-meta-popup-overlay {
+      position:fixed; inset:0; background:rgba(0,0,0,.7);
+      z-index:100002; display:flex; align-items:center; justify-content:center;
+    }
+    .cwk-meta-popup {
+      background:#141824; border:1px solid #2a2f45; border-radius:10px;
+      padding:20px; max-width:640px; width:90vw; max-height:80vh;
+      overflow-y:auto; font-family:Inter,system-ui,sans-serif; color:#cdd6f4;
+      box-shadow:0 16px 60px rgba(0,0,0,.8);
+    }
+    .cwk-meta-popup::-webkit-scrollbar { width:5px; }
+    .cwk-meta-popup::-webkit-scrollbar-track { background:#141824; }
+    .cwk-meta-popup::-webkit-scrollbar-thumb { background:#313552; border-radius:3px; }
+    .cwk-meta-popup-header {
+      display:flex; align-items:center; justify-content:space-between;
+      margin-bottom:14px;
+    }
+    .cwk-meta-popup-title { font-size:15px; font-weight:700; color:#89b4fa; }
+    .cwk-meta-popup-close {
+      background:none; border:none; color:#6c7086; font-size:20px;
+      cursor:pointer; transition:color .15s;
+    }
+    .cwk-meta-popup-close:hover { color:#f38ba8; }
+    .cwk-meta-row { margin-bottom:12px; }
+    .cwk-meta-row-label {
+      font-size:10px; color:#6c7086; font-weight:700;
+      text-transform:uppercase; letter-spacing:.05em; margin-bottom:4px;
+      display:flex; align-items:center; gap:6px;
+    }
+    .cwk-meta-row-value {
+      background:#1e2335; border:1px solid #313552; border-radius:6px;
+      padding:8px 10px; font-size:12px; color:#cdd6f4; line-height:1.5;
+      white-space:pre-wrap; word-break:break-word;
+    }
+    .cwk-meta-copy-btn {
+      background:none; border:1px solid #313552; border-radius:3px;
+      color:#6c7086; font-size:11px; cursor:pointer; padding:1px 5px;
+      transition:color .15s, border-color .15s;
+    }
+    .cwk-meta-copy-btn:hover { color:#89b4fa; border-color:#89b4fa; }
+    .cwk-meta-params-grid {
+      display:grid; grid-template-columns:repeat(auto-fill, minmax(120px,1fr)); gap:8px;
+    }
+    .cwk-meta-param {
+      background:#1e2335; border:1px solid #313552; border-radius:6px;
+      padding:8px 10px; text-align:center;
+    }
+    .cwk-meta-param-label {
+      font-size:10px; color:#6c7086; font-weight:700;
+      text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px;
+    }
+    .cwk-meta-param-value { font-size:13px; color:#cdd6f4; font-weight:600; }
+
     .cwk-info-desc-wrap { font-size:13px; color:#a6adc8; line-height:1.7; }
     .cwk-info-desc-wrap h1,.cwk-info-desc-wrap h2,.cwk-info-desc-wrap h3 {
       color:#cdd6f4; margin:.6em 0 .3em;
@@ -174,6 +254,39 @@ function _injectInfoStyles() {
       position:absolute; top:20px; right:24px;
       background:none; border:none; color:#fff; font-size:28px; cursor:pointer;
     }
+
+    /* ── NEW: Edit button for editable info cells ──────────────────────────── */
+    .cwk-info-edit-btn {
+      background:none; border:1px solid #313552; border-radius:3px;
+      color:#6c7086; font-size:10px; cursor:pointer; padding:1px 5px;
+      transition:color .15s, border-color .15s; margin-left:auto;
+    }
+    .cwk-info-edit-btn:hover { color:#89b4fa; border-color:#89b4fa; }
+    .cwk-info-edit-input {
+      width:100%; background:#141824; border:1px solid #89b4fa;
+      border-radius:4px; color:#cdd6f4; font-size:13px; font-weight:500;
+      padding:3px 6px; outline:none; font-family:Inter,system-ui,sans-serif;
+      box-sizing:border-box;
+    }
+    .cwk-info-edit-select {
+      width:100%; background:#141824; border:1px solid #89b4fa;
+      border-radius:4px; color:#cdd6f4; font-size:13px; font-weight:500;
+      padding:3px 6px; outline:none; font-family:Inter,system-ui,sans-serif;
+      box-sizing:border-box; appearance:none; cursor:pointer;
+    }
+    .cwk-info-save-bar {
+      display:flex; align-items:center; gap:8px; margin-top:8px;
+    }
+    .cwk-info-save-btn {
+      padding:5px 14px; border-radius:5px; border:1px solid #a6e3a1;
+      background:#1e2335; color:#a6e3a1; font-size:12px; font-weight:600;
+      cursor:pointer; transition:background .15s;
+    }
+    .cwk-info-save-btn:hover { background:#2a2f45; }
+    .cwk-info-save-btn:disabled { opacity:.5; cursor:default; }
+    .cwk-info-save-status {
+      font-size:11px; color:#a6e3a1; font-style:italic;
+    }
   `;
   document.head.appendChild(st);
 }
@@ -189,6 +302,255 @@ function _renderTagsInto(el, tags) {
   }
   el.className = "cwk-info-tags";
   el.innerHTML = tags.map(t => `<span class="cwk-info-tag">${_esc(t)}</span>`).join("");
+}
+
+// ─── Metadata popup for a single image ────────────────────────────────────────
+
+function _showImageMetadata(imgObj) {
+  const meta = imgObj?.meta;
+  if (!meta || typeof meta !== "object") {
+    alert("No generation metadata available for this image.");
+    return;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "cwk-meta-popup-overlay";
+
+  const popup = document.createElement("div");
+  popup.className = "cwk-meta-popup";
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "cwk-meta-popup-header";
+  header.innerHTML = `
+    <span class="cwk-meta-popup-title">📋 Image Generation Metadata</span>
+    <button class="cwk-meta-popup-close" title="Close">✕</button>
+  `;
+  popup.appendChild(header);
+
+  header.querySelector(".cwk-meta-popup-close").addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+
+  // ── Prompt fields (with copy button) ──────────────────────────────────────
+  const prompt = meta.prompt || meta.Prompt || "";
+  const negPrompt = meta.negativePrompt || meta.NegativePrompt || meta.negative_prompt || "";
+
+  function _addPromptRow(label, text) {
+    if (!text) return;
+    const row = document.createElement("div");
+    row.className = "cwk-meta-row";
+
+    const labelEl = document.createElement("div");
+    labelEl.className = "cwk-meta-row-label";
+    labelEl.innerHTML = `${_esc(label)} `;
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "cwk-meta-copy-btn";
+    copyBtn.textContent = "📋 Copy";
+    copyBtn.title = `Copy ${label} to clipboard`;
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.textContent = "✓ Copied!";
+        setTimeout(() => { copyBtn.textContent = "📋 Copy"; }, 1500);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+        copyBtn.textContent = "✓ Copied!";
+        setTimeout(() => { copyBtn.textContent = "📋 Copy"; }, 1500);
+      }
+    });
+    labelEl.appendChild(copyBtn);
+
+    const valueEl = document.createElement("div");
+    valueEl.className = "cwk-meta-row-value";
+    valueEl.textContent = text;
+
+    row.appendChild(labelEl);
+    row.appendChild(valueEl);
+    popup.appendChild(row);
+  }
+
+  _addPromptRow("Positive Prompt", prompt);
+  _addPromptRow("Negative Prompt", negPrompt);
+
+  // ── Generation parameters (grid of small cards) ───────────────────────────
+  const params = [];
+
+  const sampler = meta.sampler || meta.Sampler;
+  if (sampler) params.push({ label: "Sampler", value: sampler });
+
+  const scheduler = meta.scheduler || meta["Schedule type"] || meta.Scheduler;
+  if (scheduler) params.push({ label: "Scheduler", value: scheduler });
+
+  const cfg = meta.cfgScale ?? meta.CfgScale ?? meta.cfg;
+  if (cfg !== undefined && cfg !== null) params.push({ label: "CFG Scale", value: String(cfg) });
+
+  const steps = meta.steps ?? meta.Steps;
+  if (steps !== undefined && steps !== null) params.push({ label: "Steps", value: String(steps) });
+
+  const clipSkip = meta.clipSkip ?? meta.ClipSkip ?? meta.clip_skip;
+  if (clipSkip !== undefined && clipSkip !== null) params.push({ label: "Clip Skip", value: String(clipSkip) });
+
+  const seed = meta.seed ?? meta.Seed;
+  if (seed !== undefined && seed !== null) params.push({ label: "Seed", value: String(seed) });
+
+  const size = meta.Size || meta.size;
+  if (size) params.push({ label: "Size", value: size });
+
+  if (params.length > 0) {
+    const paramsLabel = document.createElement("div");
+    paramsLabel.className = "cwk-meta-row-label";
+    paramsLabel.style.marginBottom = "8px";
+    paramsLabel.textContent = "Generation Parameters";
+    popup.appendChild(paramsLabel);
+
+    const grid = document.createElement("div");
+    grid.className = "cwk-meta-params-grid";
+
+    for (const p of params) {
+      const cell = document.createElement("div");
+      cell.className = "cwk-meta-param";
+      cell.innerHTML = `
+        <div class="cwk-meta-param-label">${_esc(p.label)}</div>
+        <div class="cwk-meta-param-value">${_esc(p.value)}</div>
+      `;
+      grid.appendChild(cell);
+    }
+    popup.appendChild(grid);
+  }
+
+  // ── No metadata at all ────────────────────────────────────────────────────
+  if (!prompt && !negPrompt && params.length === 0) {
+    const noData = document.createElement("div");
+    noData.className = "cwk-info-placeholder";
+    noData.textContent = "No generation metadata available for this image.";
+    popup.appendChild(noData);
+  }
+
+  overlay.appendChild(popup);
+  document.body.appendChild(overlay);
+}
+
+// ─── Check if image has metadata ──────────────────────────────────────────────
+
+function _hasMetadata(imgObj) {
+  const meta = imgObj?.meta;
+  if (!meta || typeof meta !== "object") return false;
+  return !!(
+    meta.prompt || meta.Prompt ||
+    meta.negativePrompt || meta.NegativePrompt || meta.negative_prompt ||
+    meta.sampler || meta.Sampler ||
+    meta.steps || meta.Steps ||
+    meta.cfgScale || meta.CfgScale || meta.cfg ||
+    meta.seed || meta.Seed
+  );
+}
+
+// ─── Editable cell helper ─────────────────────────────────────────────────────
+
+/**
+ * Makes a cell's value editable. When the edit button is clicked, the value
+ * element is replaced with an input (or select for base_model).
+ * Returns an object { getValue } to read the current edited value.
+ */
+function _makeEditable(cell, fieldKey, currentValue, pendingEdits) {
+  const labelEl = cell.querySelector(".cwk-info-label");
+  const valueEl = cell.querySelector(".cwk-info-value");
+  if (!labelEl || !valueEl) return;
+
+  const editBtn = document.createElement("button");
+  editBtn.className = "cwk-info-edit-btn";
+  editBtn.textContent = "✏️";
+  editBtn.title = "Edit this field";
+  labelEl.appendChild(editBtn);
+
+  editBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    // Already editing?
+    if (cell.querySelector(".cwk-info-edit-input, .cwk-info-edit-select")) return;
+
+    const curVal = pendingEdits[fieldKey] ?? currentValue;
+
+    if (fieldKey === "base_model") {
+      // Render a <select> with known base model options + the current value
+      const select = document.createElement("select");
+      select.className = "cwk-info-edit-select";
+
+      const options = [..._BASE_MODEL_OPTIONS];
+      // If current value isn't in the list, add it at the top
+      if (curVal && !options.some(o => o.toLowerCase() === curVal.toLowerCase())) {
+        options.unshift(curVal);
+      }
+      for (const opt of options) {
+        const o = document.createElement("option");
+        o.value = opt;
+        o.textContent = opt;
+        if (opt.toLowerCase() === curVal.toLowerCase()) o.selected = true;
+        select.appendChild(o);
+      }
+
+      valueEl.textContent = "";
+      valueEl.style.overflow = "visible";
+      valueEl.appendChild(select);
+
+      select.addEventListener("change", () => {
+        pendingEdits[fieldKey] = select.value;
+      });
+      select.focus();
+    } else {
+      // Render a text <input>
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "cwk-info-edit-input";
+      input.value = curVal;
+
+      valueEl.textContent = "";
+      valueEl.style.overflow = "visible";
+      valueEl.appendChild(input);
+
+      input.addEventListener("input", () => {
+        pendingEdits[fieldKey] = input.value;
+      });
+      input.addEventListener("keydown", e => {
+        if (e.key === "Escape") {
+          // Revert
+          delete pendingEdits[fieldKey];
+          valueEl.textContent = currentValue;
+          valueEl.style.overflow = "";
+        }
+        e.stopPropagation();
+      });
+      input.focus();
+      input.select();
+    }
+
+    // Mark as dirty immediately
+    if (!(fieldKey in pendingEdits)) {
+      pendingEdits[fieldKey] = curVal;
+    }
+
+    editBtn.textContent = "↩";
+    editBtn.title = "Cancel edit";
+    editBtn._editing = true;
+
+    // Replace click handler for cancel
+    const origHandler = editBtn.onclick;
+    editBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      delete pendingEdits[fieldKey];
+      valueEl.textContent = currentValue;
+      valueEl.style.overflow = "";
+      editBtn.textContent = "✏️";
+      editBtn.title = "Edit this field";
+      editBtn._editing = false;
+      editBtn.onclick = null; // reset to let the addEventListener handle it again
+    };
+  });
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -212,12 +574,12 @@ export function showModelInfo(model, civitaiApiKey = "") {
   const sizeStr     = _fmtBytes(model.file_size ?? 0);
   const civitaiUrl  = modelId ? `https://civitai.com/models/${modelId}` : null;
 
-  // OLD — treats [] as "confirmed no tags", never fetches:
-  // const tagsState = Array.isArray(c.tags) ? "ready" : "fetch";
-
   // NEW — [] is treated as "unknown, fetch to confirm":
   const tagsState = (Array.isArray(c.tags) && c.tags.length > 0) ? "ready" : "fetch";
   const initialTags = tagsState === "ready" ? c.tags : [];
+
+  // ── Pending edits tracker ──────────────────────────────────────────────────
+  const pendingEdits = {};
 
   // ── Build DOM ──────────────────────────────────────────────────────────────
   const box = document.createElement("div");
@@ -243,20 +605,20 @@ export function showModelInfo(model, civitaiApiKey = "") {
 
     <div class="cwk-info-body">
       <div class="cwk-info-grid">
-        <div class="cwk-info-cell">
+        <div class="cwk-info-cell" id="cwk-info-cell-version">
           <div class="cwk-info-label">Version</div>
           <div class="cwk-info-value">${_esc(versionName)}</div>
         </div>
-        <div class="cwk-info-cell">
-          <div class="cwk-info-label">File Name</div>
-          <div class="cwk-info-value">${_esc(fileName)}</div>
+        <div class="cwk-info-cell" id="cwk-info-cell-displayname">
+          <div class="cwk-info-label">Display Name</div>
+          <div class="cwk-info-value">${_esc(displayName)}</div>
         </div>
         <div class="cwk-info-cell cwk-info-cell-wide">
           <div class="cwk-info-label">Location</div>
           <div class="cwk-info-value cwk-info-path">${_esc(fullPath)}</div>
         </div>
         <div class="cwk-info-cell-split">
-          <div>
+          <div id="cwk-info-cell-basemodel">
             <div class="cwk-info-label">Base Model</div>
             <div class="cwk-info-value">${_esc(baseModel)}</div>
           </div>
@@ -265,6 +627,12 @@ export function showModelInfo(model, civitaiApiKey = "") {
             <div class="cwk-info-value">${_esc(sizeStr)}</div>
           </div>
         </div>
+      </div>
+
+      <!-- Save bar for manual edits -->
+      <div class="cwk-info-save-bar" id="cwk-info-save-bar" style="display:none;">
+        <button class="cwk-info-save-btn" id="cwk-info-save-btn">💾 Save Changes</button>
+        <span class="cwk-info-save-status" id="cwk-info-save-status"></span>
       </div>
 
       ${shortDesc ? `
@@ -294,16 +662,103 @@ export function showModelInfo(model, civitaiApiKey = "") {
 
   overlay.appendChild(box);
 
-  const tagsEl  = box.querySelector("#cwk-tags-el");
+  const tagsEl   = box.querySelector("#cwk-tags-el");
   const descWrap = box.querySelector("#cwk-info-desc-wrap");
+
+  // ── Make cells editable ────────────────────────────────────────────────────
+  const versionCell     = box.querySelector("#cwk-info-cell-version");
+  const displayNameCell = box.querySelector("#cwk-info-cell-displayname");
+  const baseModelCell   = box.querySelector("#cwk-info-cell-basemodel");
+
+  _makeEditable(versionCell,     "version_name", versionName, pendingEdits);
+  _makeEditable(displayNameCell, "civitai_name",  displayName, pendingEdits);
+  _makeEditable(baseModelCell,   "base_model",    baseModel,   pendingEdits);
+
+  // ── Show save bar when edits are pending ────────────────────────────────────
+  const saveBar    = box.querySelector("#cwk-info-save-bar");
+  const saveBtn    = box.querySelector("#cwk-info-save-btn");
+  const saveStatus = box.querySelector("#cwk-info-save-status");
+
+  // Use a MutationObserver + input events to detect when fields are being edited
+  const _checkDirty = () => {
+    const hasPending = Object.keys(pendingEdits).length > 0;
+    saveBar.style.display = hasPending ? "flex" : "none";
+  };
+
+  // Poll for changes (simple approach — runs on user interactions within the grid)
+  box.querySelector(".cwk-info-grid").addEventListener("input",  _checkDirty);
+  box.querySelector(".cwk-info-grid").addEventListener("change", _checkDirty);
+  box.querySelector(".cwk-info-grid").addEventListener("click",  () => setTimeout(_checkDirty, 50));
+
+  saveBtn.addEventListener("click", async () => {
+    const edits = { ...pendingEdits };
+    if (Object.keys(edits).length === 0) return;
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving…";
+    saveStatus.textContent = "";
+
+    try {
+      const res = await fetch("/cwk/civitai/meta/edit", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ model: model.name, edits }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      // Update the in-memory model object so the panel grid reflects changes
+      if (!model.civitai) model.civitai = {};
+      for (const [k, v] of Object.entries(edits)) {
+        model.civitai[k] = v;
+      }
+
+      // Update the displayed values in the cells (revert from input to text)
+      if (edits.version_name) {
+        const ve = versionCell.querySelector(".cwk-info-value");
+        ve.textContent = edits.version_name;
+        ve.style.overflow = "";
+      }
+      if (edits.civitai_name) {
+        const de = displayNameCell.querySelector(".cwk-info-value");
+        de.textContent = edits.civitai_name;
+        de.style.overflow = "";
+        // Also update the header title
+        box.querySelector(".cwk-info-model-name").textContent = edits.civitai_name;
+      }
+      if (edits.base_model) {
+        const be = baseModelCell.querySelector(".cwk-info-value");
+        be.textContent = edits.base_model;
+        be.style.overflow = "";
+      }
+
+      // Clear pending edits
+      for (const k of Object.keys(pendingEdits)) delete pendingEdits[k];
+      saveBar.style.display = "none";
+
+      saveStatus.textContent = "✓ Saved!";
+      saveBtn.textContent = "💾 Save Changes";
+      saveBtn.disabled = false;
+      setTimeout(() => { saveStatus.textContent = ""; }, 2000);
+    } catch (e) {
+      saveStatus.textContent = `✗ ${e.message}`;
+      saveStatus.style.color = "#f38ba8";
+      saveBtn.textContent = "💾 Save Changes";
+      saveBtn.disabled = false;
+      setTimeout(() => {
+        saveStatus.textContent = "";
+        saveStatus.style.color = "";
+      }, 3000);
+    }
+  });
 
   // ── Close ──────────────────────────────────────────────────────────────────
   box.querySelector(".cwk-info-close-btn").addEventListener("click", () => overlay.remove());
   overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
 
   // ── Tags: fetch live from model-description endpoint when not in cache ──────
-  // The model-description endpoint calls GET /models/{id} which has tags at
-  // the top level. It also writes them back to the cache on the server side.
   if (tagsState === "fetch" && modelId) {
     const tagUrl = `/cwk/civitai/model-description?model=${encodeURIComponent(model.name)}`
       + (civitaiApiKey ? `&api_key=${encodeURIComponent(civitaiApiKey)}` : "");
@@ -313,7 +768,6 @@ export function showModelInfo(model, civitaiApiKey = "") {
       .then(d => {
         console.log("[CWK] model-description response for tags:", d);
         const tags = Array.isArray(d.tags) ? d.tags : [];
-        // Update in-memory model so next open is instant
         if (model.civitai) model.civitai.tags = tags;
         _renderTagsInto(tagsEl, tags);
       })
@@ -355,7 +809,6 @@ export function showModelInfo(model, civitaiApiKey = "") {
             descWrap.innerHTML = d.description
               ? d.description
               : `<div class="cwk-info-placeholder">No description available on CivitAI.</div>`;
-            // Opportunistically update tags if the tags fetch hadn't fired yet
             if (tagsState === "fetch" && Array.isArray(d.tags) && tagsEl) {
               if (model.civitai) model.civitai.tags = d.tags;
               _renderTagsInto(tagsEl, d.tags);
@@ -368,7 +821,7 @@ export function showModelInfo(model, civitaiApiKey = "") {
     });
   });
 
-  // ── Image grid ──────────────────��──────────────────────────────────────────
+  // ── Image grid ────────────────────────────────────────────────────────────
   const gridEl = box.querySelector("#cwk-info-image-grid");
 
   function _renderImages(imgs) {
@@ -380,9 +833,9 @@ export function showModelInfo(model, civitaiApiKey = "") {
 
     for (const img of imgs) {
       const url    = typeof img === "string" ? img : img.url;
-      // nsfwLevel already normalised 0-4 by server. Blur at >= 3 (X/XXX only)
       const lvl    = img?.nsfwLevel ?? 0;
       const isNsfw = lvl >= _INFO_NSFW_BLUR;
+      const hasMeta = _hasMetadata(img);
 
       const card   = document.createElement("div");
       card.className = "cwk-info-image-card" + (isNsfw ? " blurred" : "");
@@ -391,8 +844,15 @@ export function showModelInfo(model, civitaiApiKey = "") {
         ? `<video src="${_esc(url)}" muted autoplay loop playsinline></video>`
         : `<img src="${_esc(url)}" loading="lazy"/>`;
 
-      card.innerHTML = mediaSrc
-        + (isNsfw ? `<button class="cwk-info-eye-btn" title="Toggle blur">🙈</button>` : "");
+      let buttonsHtml = "";
+      if (isNsfw) {
+        buttonsHtml += `<button class="cwk-info-eye-btn" title="Toggle blur">🙈</button>`;
+      }
+      if (hasMeta) {
+        buttonsHtml += `<button class="cwk-info-meta-btn" title="View generation metadata">📋</button>`;
+      }
+
+      card.innerHTML = mediaSrc + buttonsHtml;
 
       if (isNsfw) {
         const eye = card.querySelector(".cwk-info-eye-btn");
@@ -401,6 +861,14 @@ export function showModelInfo(model, civitaiApiKey = "") {
           const blurred = card.classList.toggle("blurred");
           eye.textContent = blurred ? "🙈" : "👁";
           eye.title       = blurred ? "Reveal image" : "Blur image";
+        });
+      }
+
+      if (hasMeta) {
+        const metaBtn = card.querySelector(".cwk-info-meta-btn");
+        metaBtn.addEventListener("click", e => {
+          e.stopPropagation();
+          _showImageMetadata(img);
         });
       }
 
