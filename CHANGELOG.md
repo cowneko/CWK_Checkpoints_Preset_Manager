@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.9.0] — 2026-03-17
+
+### Added
+
+#### Model Sampling Type Selector
+- New **Model Sampling** dropdown on the node and in the Model Browser sidebar — allows switching between **eps**, **v_prediction**, **lcm**, **x0**, and **img_to_img** prediction types
+- `model_sampling` is saved as part of the per-model preset and restored on load
+- Uses ComfyUI's built-in `comfy.model_sampling` classes to patch the model at execution time:
+  - **eps** — default epsilon prediction (no patch applied)
+  - **v_prediction** — patches model with `V_PREDICTION` sampling for v-pred trained models
+  - **lcm** — uses `ModelSamplingDiscreteDistilled` for Latent Consistency Models
+  - **x0** — patches model with `X0` direct prediction
+  - **img_to_img** — eps-based tag for downstream img2img workflows
+- New `override_model_sampling` input in `INPUT_TYPES` with `(preset)` default
+- New `_apply_model_sampling()` helper in `nodes.py`
+- `MODEL_SAMPLING_TYPES` constant exported for use by the frontend
+- `default_preset()` now includes `model_sampling: "eps"` field
+
+### Changed
+
+#### Reordered Node Parameters with Visual Group Separators
+- **Node parameter order changed** to match a logical grouping layout:
+  - **Group 1:** RNG, Model Sampling
+  - **Group 2:** CLIP, Clip Type, VAE
+  - **Group 3:** Sampler, Scheduler, CFG, Steps, Clip skip
+  - **Group 4:** Res Preset, Width, Height, Batch
+- **Visual divider lines** drawn between each group on the node canvas for clearer visual separation
+- `GROUP_SEPARATORS` set in `cwk_preset_manager.js` defines which row indices get a separator line above them
+- `getRowY()` and `calcNodeHeight()` updated to account for the extra spacing from group dividers
+- `INPUT_TYPES` optional inputs reordered to match the new `INFO_ROWS` order
+- All widget mapping locations (`_loadModelIntoNode`, reset handler, update handler, `onNodeCreated`) updated for the new parameter order and new `model_sampling` field
+
+#### Model Browser Sidebar
+- New **Model Sampling** dropdown added to the sidebar preset editor (alongside RNG in a two-column row)
+- `_getSidebarPreset()`, `_setEditMode()`, and sidebar display updated to include `model_sampling`
+- `_populateDropdowns()` now also loads model sampling options from `/object_info`
+
+---
+
 ## [1.8.0] — 2026-03-16
 
 ### Added

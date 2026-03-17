@@ -12,6 +12,7 @@ const DEFAULTS = {
   sampler_name: "euler", scheduler: "normal",
   cfg: 7.0, steps: 20, clip_skip: -2,
   width: 1024, height: 1024, rng: "cpu",
+  model_sampling: "eps",
   clip_name: "embedded", clip_type: "stable_diffusion", vae_name: "embedded",
 };
 
@@ -199,9 +200,19 @@ export class ModelBrowserPanel {
               <select class="cwk-sidebar-input" id="sb-rng" disabled>
                 <option value="cpu">cpu</option>
                 <option value="gpu">gpu</option>
-				<option value="nv">nv</option>
+                <option value="nv">nv</option>
               </select>
             </div>
+          </div>
+          <div class="cwk-sidebar-section">
+            <div class="cwk-sidebar-title">Model Sampling:</div>
+            <select class="cwk-sidebar-input" id="sb-model-sampling" disabled>
+              <option value="eps">eps</option>
+              <option value="v_prediction">v_prediction</option>
+              <option value="lcm">lcm</option>
+              <option value="x0">x0</option>
+              <option value="img_to_img">img_to_img</option>
+            </select>
           </div>
           <div class="cwk-sidebar-section">
             <div class="cwk-sidebar-title">Resolution:</div>
@@ -386,6 +397,8 @@ export class ModelBrowserPanel {
       this._fillSelect("sb-scheduler", schedulers);
       const clipTypes = (inputs?.optional?.override_clip_type?.[0] ?? []).filter(v => v !== "(preset)");
       if (clipTypes.length) this._fillSelect("sb-clip-type", clipTypes);
+      const modelSamplingOpts = (inputs?.optional?.override_model_sampling?.[0] ?? []).filter(v => v !== "(preset)");
+      if (modelSamplingOpts.length) this._fillSelect("sb-model-sampling", modelSamplingOpts);
     } catch {
       this._fillSelect("sb-sampler",   ["euler","euler_ancestral","dpmpp_2m","dpmpp_sde","ddim"]);
       this._fillSelect("sb-scheduler", ["normal","karras","exponential","sgm_uniform","simple"]);
@@ -950,12 +963,13 @@ export class ModelBrowserPanel {
     document.getElementById("sb-clip-skip").value        = p.clip_skip;
     document.getElementById("sb-width").value            = p.width;
     document.getElementById("sb-height").value           = p.height;
-    this._setSelectValue("sb-sampler",   p.sampler_name);
-    this._setSelectValue("sb-scheduler", p.scheduler);
-    this._setSelectValue("sb-rng",       p.rng ?? "cpu");
-    this._setSelectValue("sb-clip-name", p.clip_name ?? "embedded");
-    this._setSelectValue("sb-clip-type", p.clip_type ?? "stable_diffusion");
-    this._setSelectValue("sb-vae-name",  p.vae_name  ?? "embedded");
+    this._setSelectValue("sb-sampler",         p.sampler_name);
+    this._setSelectValue("sb-scheduler",       p.scheduler);
+    this._setSelectValue("sb-rng",             p.rng ?? "cpu");
+    this._setSelectValue("sb-model-sampling",  p.model_sampling ?? "eps");
+    this._setSelectValue("sb-clip-name",       p.clip_name ?? "embedded");
+    this._setSelectValue("sb-clip-type",       p.clip_type ?? "stable_diffusion");
+    this._setSelectValue("sb-vae-name",        p.vae_name  ?? "embedded");
     this._setStatus(name);
   }
 
@@ -968,17 +982,18 @@ export class ModelBrowserPanel {
 
   _getSidebarPreset() {
     return {
-      sampler_name: document.getElementById("sb-sampler").value,
-      scheduler:    document.getElementById("sb-scheduler").value,
-      cfg:          parseFloat(document.getElementById("sb-cfg").value),
-      steps:        parseInt(document.getElementById("sb-steps").value, 10),
-      clip_skip:    parseInt(document.getElementById("sb-clip-skip").value, 10),
-      rng:          document.getElementById("sb-rng").value,
-      width:        parseInt(document.getElementById("sb-width").value, 10),
-      height:       parseInt(document.getElementById("sb-height").value, 10),
-      clip_name:    document.getElementById("sb-clip-name").value,
-      clip_type:    document.getElementById("sb-clip-type").value,
-      vae_name:     document.getElementById("sb-vae-name").value,
+      sampler_name:   document.getElementById("sb-sampler").value,
+      scheduler:      document.getElementById("sb-scheduler").value,
+      cfg:            parseFloat(document.getElementById("sb-cfg").value),
+      steps:          parseInt(document.getElementById("sb-steps").value, 10),
+      clip_skip:      parseInt(document.getElementById("sb-clip-skip").value, 10),
+      rng:            document.getElementById("sb-rng").value,
+      model_sampling: document.getElementById("sb-model-sampling").value,
+      width:          parseInt(document.getElementById("sb-width").value, 10),
+      height:         parseInt(document.getElementById("sb-height").value, 10),
+      clip_name:      document.getElementById("sb-clip-name").value,
+      clip_type:      document.getElementById("sb-clip-type").value,
+      vae_name:       document.getElementById("sb-vae-name").value,
     };
   }
 
@@ -987,7 +1002,7 @@ export class ModelBrowserPanel {
   _setEditMode(on) {
     this._editMode = on;
     for (const id of ["sb-sampler","sb-scheduler","sb-cfg","sb-steps",
-                       "sb-clip-skip","sb-rng","sb-width","sb-height",
+                       "sb-clip-skip","sb-rng","sb-model-sampling","sb-width","sb-height",
                        "sb-clip-name","sb-clip-type","sb-vae-name"]) {
       const el = document.getElementById(id);
       if (el) el.disabled = !on;
@@ -1044,7 +1059,7 @@ export class ModelBrowserPanel {
     }
   }
 
-  // ── Check Updates ────────────────────────────────────────────────────────���────
+  // ── Check Updates ──────────────────────────────────────────────────────────────
 
   async _checkUpdates() {
     if (!this._civitaiKey) {

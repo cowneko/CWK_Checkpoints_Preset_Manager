@@ -36,6 +36,7 @@ let SAMPLERS   = ["euler","euler_ancestral","dpmpp_2m","dpmpp_2m_sde",
                   "dpmpp_sde","dpmpp_3m_sde","ddim","uni_pc","lcm"];
 let SCHEDULERS = ["normal","karras","exponential","sgm_uniform","simple","beta"];
 const RNGS     = ["cpu","gpu", "nv"];
+const MODEL_SAMPLING_TYPES = ["eps","v_prediction","lcm","x0","img_to_img"];
 let CLIPS      = ["embedded"];
 let CLIP_TYPES = ["stable_diffusion"];
 let VAES       = ["embedded"];
@@ -47,20 +48,28 @@ function rowByKey(key) {
   return INFO_ROWS.find(r => r.key === key);
 }
 
+// ── Group separator indices — a divider line is drawn BEFORE these row indices ──
+const GROUP_SEPARATORS = new Set([0, 2, 5, 10]);
+
 const INFO_ROWS = [
-  { key: "sampler_name", label: "Sampler",    widget: "override_sampler",    type: "list",  options: SAMPLERS    },  // 0
-  { key: "scheduler",    label: "Scheduler",  widget: "override_scheduler",  type: "list",  options: SCHEDULERS  },  // 1
-  { key: "cfg",          label: "CFG",        widget: "override_cfg",        type: "float", min: 0,   max: 30    },  // 2
-  { key: "steps",        label: "Steps",      widget: "override_steps",      type: "int",   min: 1,   max: 200   },  // 3
-  { key: "clip_skip",    label: "Clip skip",  widget: "override_clip_skip",  type: "int",   min: -24, max: -1    },  // 4
-  { key: "res_preset",   label: "Res Preset", widget: "resolution_preset",   type: "list",  options: RES_PRESETS  },  // 5
-  { key: "width",        label: "Width",      widget: "override_width",      type: "int",   min: 64,  max: 8192  },  // 6
-  { key: "height",       label: "Height",     widget: "override_height",     type: "int",   min: 64,  max: 8192  },  // 7
-  { key: "batch_size",   label: "Batch",      widget: "batch_size",          type: "int",   min: 1,   max: 64    },  // 8
-  { key: "rng",          label: "RNG",        widget: "override_rng",        type: "list",  options: RNGS        },  // 9
-  { key: "clip_name",    label: "CLIP",       widget: "override_clip_name",  type: "list",  options: CLIPS       },  // 10
-  { key: "clip_type",    label: "Clip Type",  widget: "override_clip_type",  type: "list",  options: CLIP_TYPES  },  // 11
-  { key: "vae_name",     label: "VAE",        widget: "override_vae_name",   type: "list",  options: VAES        },  // 12
+  // ── Group 1: RNG & Model Sampling ──
+  { key: "rng",            label: "RNG",            widget: "override_rng",            type: "list",  options: RNGS                },  // 0
+  { key: "model_sampling", label: "Model Sampling", widget: "override_model_sampling", type: "list",  options: MODEL_SAMPLING_TYPES },  // 1
+  // ── Group 2: CLIP / Clip Type / VAE ──
+  { key: "clip_name",     label: "CLIP",       widget: "override_clip_name",  type: "list",  options: CLIPS       },  // 2
+  { key: "clip_type",     label: "Clip Type",  widget: "override_clip_type",  type: "list",  options: CLIP_TYPES  },  // 3
+  { key: "vae_name",      label: "VAE",        widget: "override_vae_name",   type: "list",  options: VAES        },  // 4
+  // ── Group 3: Sampler / Scheduler / CFG / Steps / Clip skip ──
+  { key: "sampler_name",  label: "Sampler",    widget: "override_sampler",    type: "list",  options: SAMPLERS    },  // 5
+  { key: "scheduler",     label: "Scheduler",  widget: "override_scheduler",  type: "list",  options: SCHEDULERS  },  // 6
+  { key: "cfg",           label: "CFG",        widget: "override_cfg",        type: "float", min: 0,   max: 30    },  // 7
+  { key: "steps",         label: "Steps",      widget: "override_steps",      type: "int",   min: 1,   max: 200   },  // 8
+  { key: "clip_skip",     label: "Clip skip",  widget: "override_clip_skip",  type: "int",   min: -24, max: -1    },  // 9
+  // ── Group 4: Resolution / Batch ──
+  { key: "res_preset",    label: "Res Preset", widget: "resolution_preset",   type: "list",  options: RES_PRESETS  },  // 10
+  { key: "width",         label: "Width",      widget: "override_width",      type: "int",   min: 64,  max: 8192  },  // 11
+  { key: "height",        label: "Height",     widget: "override_height",     type: "int",   min: 64,  max: 8192  },  // 12
+  { key: "batch_size",    label: "Batch",      widget: "batch_size",          type: "int",   min: 1,   max: 64    },  // 13
 ];
 
 // ─── Async data loaders (single definitions, no duplicates) ───────────────────
@@ -103,6 +112,13 @@ async function _loadSamplerOptions() {
 
     const clipTypes = (inputs?.optional?.override_clip_type?.[0] ?? []).filter(v => v !== "(preset)");
     if (clipTypes.length) { CLIP_TYPES = clipTypes; const r = rowByKey("clip_type"); if (r) r.options = clipTypes; }
+
+    // Load model sampling types from object_info
+    const modelSamplingOpts = (inputs?.optional?.override_model_sampling?.[0] ?? []).filter(v => v !== "(preset)");
+    if (modelSamplingOpts.length) {
+      const r = rowByKey("model_sampling");
+      if (r) r.options = modelSamplingOpts;
+    }
   } catch (e) {
     console.warn("[CWK] Could not load sampler options from object_info:", e);
   }
@@ -176,6 +192,8 @@ function loadImage(url) {
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
+const GROUP_SEP_H = 12;  // extra vertical space for group divider
+
 function getThumbRect(node) {
   const regionTop    = TITLE_H();
   const regionBottom = getSlotsBottom();
@@ -197,7 +215,14 @@ function getRowsStartY(node) {
   return Math.max(thumbBottom, slotsBottom);
 }
 
-function getRowY(node, i) { return getRowsStartY(node) + i * (ROW_H + 3); }
+function getRowY(node, i) {
+  let y = getRowsStartY(node);
+  for (let r = 0; r < i; r++) {
+    y += ROW_H + 3;
+    if (GROUP_SEPARATORS.has(r + 1)) y += GROUP_SEP_H;
+  }
+  return y;
+}
 
 function getButtonRects(node) {
   const btnW  = node.size[0] - PAD * 2;
@@ -216,7 +241,12 @@ function getValueRect(node, i) {
 }
 
 function calcNodeHeight(node) {
-  return getRowsStartY(node) + INFO_ROWS.length * (ROW_H + 3) + PAD + BTNS_AREA_H;
+  let h = getRowsStartY(node);
+  for (let i = 0; i < INFO_ROWS.length; i++) {
+    if (GROUP_SEPARATORS.has(i)) h += GROUP_SEP_H;
+    h += ROW_H + 3;
+  }
+  return h + PAD + BTNS_AREA_H;
 }
 
 // ─── Hit testing ──────────────────────────────────────────────────────────────
@@ -472,6 +502,15 @@ function drawNode(node, ctx) {
     const val     = preset[row.key] ?? "—";
     const isHov   = hover?.rowIdx === i;
     const hovPart = isHov ? hover.part : null;
+
+    // ── Group separator line ──
+    if (GROUP_SEPARATORS.has(i)) {
+      const sepY = ry - GROUP_SEP_H / 2 - 1;
+      ctx.strokeStyle = C.border; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(PAD, sepY); ctx.lineTo(w - PAD, sepY); ctx.stroke();
+    }
+
     if (isHov) {
       roundRect(ctx, PAD, ry, w - PAD*2, ROW_H, 3);
       ctx.fillStyle = C.hoverBg; ctx.fill();
@@ -538,21 +577,23 @@ async function _loadModelIntoNode(node, modelName) {
       if (node._cwkPreset.batch_size == null) node._cwkPreset.batch_size = 1;
       // Also set res_preset display
       if (node._cwkPreset.res_preset == null) node._cwkPreset.res_preset = "(preset)";
-      if (node._cwkPreset.clip_type == null) node._cwkPreset.clip_type = "stable_diffusion";	  
+      if (node._cwkPreset.clip_type == null) node._cwkPreset.clip_type = "stable_diffusion";
+      if (node._cwkPreset.model_sampling == null) node._cwkPreset.model_sampling = "eps";
       const map = {
-        override_sampler:   preset.sampler_name,
-        override_scheduler: preset.scheduler,
-        override_cfg:       preset.cfg,
-        override_steps:     preset.steps,
-        override_clip_skip: preset.clip_skip,
-        resolution_preset:  "(preset)",
-        override_width:     preset.width,
-        override_height:    preset.height,
-        batch_size:         preset.batch_size ?? 1,
-        override_rng:       preset.rng,
-        override_clip_name: preset.clip_name,
-        override_clip_type: preset.clip_type,
-        override_vae_name:  preset.vae_name,
+        override_rng:              preset.rng,
+        override_model_sampling:   preset.model_sampling ?? "eps",
+        override_clip_name:        preset.clip_name,
+        override_clip_type:        preset.clip_type,
+        override_vae_name:         preset.vae_name,
+        override_sampler:          preset.sampler_name,
+        override_scheduler:        preset.scheduler,
+        override_cfg:              preset.cfg,
+        override_steps:            preset.steps,
+        override_clip_skip:        preset.clip_skip,
+        resolution_preset:         "(preset)",
+        override_width:            preset.width,
+        override_height:           preset.height,
+        batch_size:                preset.batch_size ?? 1,
       };
 
       for (const [wn, val] of Object.entries(map)) {
@@ -600,6 +641,8 @@ app.registerExtension({
         if (bs) bs.value = 1;
         const ct = getW("override_clip_type");
         if (ct) ct.value = "(preset)";
+        const ms = getW("override_model_sampling");
+        if (ms) ms.value = "(preset)";
 
         node.size[0] = Math.max(node.size[0], NODE_MIN_W);
         node.size[1] = calcNodeHeight(node);
@@ -785,21 +828,23 @@ function handleButtonClick(node, key) {
     apiFetch(`/cwk/preset?model=${encodeURIComponent(modelName)}`)
       .then(({ preset }) => {
         if (!preset) return;
-        node._cwkPreset = { ...preset, batch_size: node._cwkPreset?.batch_size ?? 1, res_preset: "(preset)" };
+        node._cwkPreset = { ...preset, batch_size: node._cwkPreset?.batch_size ?? 1,
+                            res_preset: "(preset)", model_sampling: preset.model_sampling ?? "eps" };
         const map = {
-          override_sampler:   preset.sampler_name ?? "(preset)",
-          override_scheduler: preset.scheduler    ?? "(preset)",
-          override_cfg:       preset.cfg          ?? 0,
-          override_steps:     preset.steps        ?? 0,
-          override_clip_skip: preset.clip_skip    ?? 0,
-          resolution_preset:  "(preset)",
-          override_width:     preset.width        ?? 0,
-          override_height:    preset.height       ?? 0,
-          batch_size:         preset.batch_size   ?? 1,
-          override_rng:       preset.rng          ?? "(preset)",
-          override_clip_name: preset.clip_name    ?? "(preset)",
-          override_clip_type: preset.clip_type    ?? "(preset)",
-          override_vae_name:  preset.vae_name     ?? "(preset)",
+          override_rng:              preset.rng              ?? "(preset)",
+          override_model_sampling:   preset.model_sampling   ?? "eps",
+          override_clip_name:        preset.clip_name        ?? "(preset)",
+          override_clip_type:        preset.clip_type        ?? "(preset)",
+          override_vae_name:         preset.vae_name         ?? "(preset)",
+          override_sampler:          preset.sampler_name     ?? "(preset)",
+          override_scheduler:        preset.scheduler        ?? "(preset)",
+          override_cfg:              preset.cfg              ?? 0,
+          override_steps:            preset.steps            ?? 0,
+          override_clip_skip:        preset.clip_skip        ?? 0,
+          resolution_preset:         "(preset)",
+          override_width:            preset.width            ?? 0,
+          override_height:           preset.height           ?? 0,
+          batch_size:                preset.batch_size        ?? 1,
         };
         for (const [wn, val] of Object.entries(map)) {
           const w = getW(wn);
@@ -816,17 +861,18 @@ function handleButtonClick(node, key) {
     if (!modelName) { alert("No model loaded."); return; }
     const p      = node._cwkPreset ?? {};
     const preset = {};
-    if (p.sampler_name && p.sampler_name !== "(preset)") preset.sampler_name = p.sampler_name;
-    if (p.scheduler    && p.scheduler    !== "(preset)") preset.scheduler    = p.scheduler;
-    if (p.cfg      != null && Number(p.cfg)       !== 0) preset.cfg          = Number(p.cfg);
-    if (p.steps    != null && Number(p.steps)     !== 0) preset.steps        = Number(p.steps);
-    if (p.clip_skip!= null && Number(p.clip_skip) !== 0) preset.clip_skip    = Number(p.clip_skip);
-    if (p.width    != null && Number(p.width)     !== 0) preset.width        = Number(p.width);
-    if (p.height   != null && Number(p.height)    !== 0) preset.height       = Number(p.height);
-    if (p.rng      && p.rng !== "(preset)")               preset.rng          = p.rng;
-    if (p.clip_name)                                      preset.clip_name    = p.clip_name;
-	if (p.clip_type && p.clip_type !== "(preset)")        preset.clip_type    = p.clip_type;
-    if (p.vae_name)                                       preset.vae_name     = p.vae_name;
+    if (p.sampler_name && p.sampler_name !== "(preset)") preset.sampler_name    = p.sampler_name;
+    if (p.scheduler    && p.scheduler    !== "(preset)") preset.scheduler       = p.scheduler;
+    if (p.cfg      != null && Number(p.cfg)       !== 0) preset.cfg             = Number(p.cfg);
+    if (p.steps    != null && Number(p.steps)     !== 0) preset.steps           = Number(p.steps);
+    if (p.clip_skip!= null && Number(p.clip_skip) !== 0) preset.clip_skip       = Number(p.clip_skip);
+    if (p.width    != null && Number(p.width)     !== 0) preset.width           = Number(p.width);
+    if (p.height   != null && Number(p.height)    !== 0) preset.height          = Number(p.height);
+    if (p.rng      && p.rng !== "(preset)")               preset.rng             = p.rng;
+    if (p.model_sampling && p.model_sampling !== "(preset)") preset.model_sampling = p.model_sampling;
+    if (p.clip_name)                                      preset.clip_name       = p.clip_name;
+    if (p.clip_type && p.clip_type !== "(preset)")        preset.clip_type       = p.clip_type;
+    if (p.vae_name)                                       preset.vae_name        = p.vae_name;
     apiFetch("/cwk/preset", {
       method: "POST",
       body:   JSON.stringify({ model: modelName, preset }),

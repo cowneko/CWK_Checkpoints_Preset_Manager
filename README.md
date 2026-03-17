@@ -168,7 +168,17 @@ Use the **RNG** dropdown to select the noise generation source:
 - **gpu** — generate noise on the active GPU (faster, but results may vary across different GPU models)
 - **nv** — NVidia Philox RNG (produces identical noise to `torch.randn(..., device='cuda')` but runs on CPU — enables cross-GPU reproducibility matching NVidia's CUDA RNG)
 
-### 10. External CLIP / VAE
+### 10. Model Sampling type
+Use the **Model Sampling** dropdown to select the prediction type for the loaded model:
+- **eps** — epsilon prediction (default for most models)
+- **v_prediction** — velocity prediction (for v-pred trained models like some NoobAI/SDXL variants)
+- **lcm** — Latent Consistency Model sampling
+- **x0** — direct x0 prediction
+- **img_to_img** — eps-based, useful as a tag for img2img workflows
+
+The sampling type is applied as a model patch at execution time and is saved per-model in the preset.
+
+### 11. External CLIP / VAE
 Use the **CLIP** and **VAE** dropdowns on the node or in the Model Browser sidebar to select an external model file, or leave as `embedded` to use the checkpoint's built-in CLIP/VAE. If an external file fails to load, the node falls back to the embedded version with a console warning.
 
 When loading an external CLIP model, use the **Clip Type** dropdown to select the correct architecture:
@@ -179,16 +189,16 @@ When loading an external CLIP model, use the **Clip Type** dropdown to select th
 
 This is especially important for `.gguf` text encoders, which require the correct type to load properly via city96's GGUF CLIP loader.
 
-### 11. Manage your models
+### 12. Manage your models
 Use the Model Browser to organize your collection:
 - **⭐ Star** your favorite models and toggle the favorites filter
 - **Right-click** any card for options: view model info, pick or set thumbnails, check for updates, refresh CivitAI data, or delete the model
 - **Check Updates** to see which models have newer versions on CivitAI, then download any version directly from the version checker
 
-### 12. View image metadata
+### 13. View image metadata
 In the Model Info overlay, click the **📋** button on any example image to view its generation metadata — prompts, sampler, scheduler, CFG, steps, clip skip, seed, and size. Use the **📋 Copy** buttons to copy prompts to the clipboard.
 
-### 13. Sampler / scheduler fallback
+### 14. Sampler / scheduler fallback
 If a preset or CivitAI metadata contains a sampler or scheduler name that isn't installed (e.g. A1111 naming like "Euler a" or "DPM++ 2M Karras"), the node automatically resolves it to the closest available match. If no close match exists, it falls back safely to `euler` / `simple`. Check the ComfyUI console for resolution logs:
 ```
 [CWK] Sampler alias: 'Euler a' → 'euler_ancestral'
@@ -196,7 +206,7 @@ If a preset or CivitAI metadata contains a sampler or scheduler name that isn't 
 [CWK] ⚠ Sampler 'unknown_sampler' not found — falling back to 'euler'
 ```
 
-### 14. GGUF models
+### 15. GGUF models
 To use `.gguf` quantized models:
 1. Install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) by city96
 2. Place `.gguf` model files in your `ComfyUI/models/unet/` or `ComfyUI/models/diffusion_models/` folder

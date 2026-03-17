@@ -7,6 +7,7 @@ Single node: CWK_ModelPresetManager
   - Outputs: MODEL, CLIP, VAE, LATENT, steps, cfg, sampler_name, scheduler, width, height
   - Applies clip_skip and rng internally
   - Supports external CLIP and VAE override (or embedded from checkpoint)
+  - Supports model sampling type override (eps, v_prediction, lcm, x0, img_to_img)
 """
 
 import json
@@ -48,6 +49,11 @@ def save_last_used_model(model_name: str) -> None:
             json.dump({"model_name": model_name}, f)
     except Exception as e:
         print(f"[CWK_PresetManager] Error saving last model: {e}")
+
+
+# ─── Model Sampling types ──────────────────────────────────────────────────────
+
+MODEL_SAMPLING_TYPES = ["eps", "v_prediction", "lcm", "x0", "img_to_img"]
 
 
 # ─── Resolution presets ────────────────────────────────────────────────────────
@@ -131,17 +137,18 @@ def default_preset() -> Dict[str, Any]:
     samplers   = list(comfy.samplers.KSampler.SAMPLERS)
     schedulers = list(comfy.samplers.KSampler.SCHEDULERS)
     return {
-        "sampler_name": samplers[0]   if samplers   else "euler",
-        "scheduler":    schedulers[0] if schedulers else "normal",
-        "cfg":          7.0,
-        "steps":        20,
-        "clip_skip":    -2,
-        "width":        1024,
-        "height":       1024,
-        "rng":          "cpu",
-        "clip_name":    "embedded",
-        "vae_name":     "embedded",
-        "clip_type":    "stable_diffusion",
+        "sampler_name":    samplers[0]   if samplers   else "euler",
+        "scheduler":       schedulers[0] if schedulers else "normal",
+        "cfg":             7.0,
+        "steps":           20,
+        "clip_skip":       -2,
+        "width":           1024,
+        "height":          1024,
+        "rng":             "cpu",
+        "model_sampling":  "eps",
+        "clip_name":       "embedded",
+        "vae_name":        "embedded",
+        "clip_type":       "stable_diffusion",
     }
 
 
@@ -369,6 +376,63 @@ def _apply_rng(model, rng: str):
     return model
 
 
+# ─── Model Sampling type application ──────────────────────────────────────────
+
+def _apply_model_sampling(model, sampling_type: str):
+    """Apply a model sampling type override (eps, v_prediction, lcm, x0, img_to_img).
+    Uses ComfyUI's built-in ModelSamplingDiscrete / LCM / etc. from comfy_extras."""
+    if sampling_type == "eps":
+        # eps is the default for most models — no patch needed
+        print(f"[CWK] Model sampling: eps (default, no patch)")
+        return model
+
+    try:
+        import comfy.model_sampling as ms
+    except ImportError:
+        print(f"[CWK] ⚠ comfy.model_sampling not available — skipping sampling override")
+        return model
+
+    model = model.clone()
+
+    if sampling_type == "v_prediction":
+        # Patch model to use V-prediction
+        class VPredSampling(ms.ModelSamplingDiscrete, ms.V_PREDICTION):
+            pass
+        sampling = VPredSampling(model.model.model_config)
+        model.add_object_patch("model_sampling", sampling)
+        print(f"[CWK] Model sampling: v_prediction")
+
+    elif sampling_type == "lcm":
+        # LCM sampling — use ModelSamplingDiscreteDistilled if available
+        try:
+            from comfy_extras.nodes_model_advanced import ModelSamplingDiscreteDistilled
+            class LCMSampling(ModelSamplingDiscreteDistilled, ms.EPS):
+                pass
+            sampling = LCMSampling(model.model.model_config)
+            model.add_object_patch("model_sampling", sampling)
+            print(f"[CWK] Model sampling: lcm (distilled)")
+        except ImportError:
+            print(f"[CWK] ⚠ LCM sampling not available (ModelSamplingDiscreteDistilled not found)")
+
+    elif sampling_type == "x0":
+        # X0 prediction
+        class X0Sampling(ms.ModelSamplingDiscrete, ms.X0):
+            pass
+        sampling = X0Sampling(model.model.model_config)
+        model.add_object_patch("model_sampling", sampling)
+        print(f"[CWK] Model sampling: x0")
+
+    elif sampling_type == "img_to_img":
+        # For img_to_img we keep eps but this tag can be used by downstream
+        # nodes to adjust denoise strength / latent handling
+        print(f"[CWK] Model sampling: img_to_img (eps-based, tag only)")
+
+    else:
+        print(f"[CWK] ⚠ Unknown sampling type '{sampling_type}' — using default")
+
+    return model
+
+
 # ─── External CLIP / VAE loaders ──────────────────────────────────────────────
 
 def _load_external_clip(clip_name: str, clip_type_str: str = "stable_diffusion"):
@@ -562,25 +626,32 @@ class CWK_ModelPresetManager:
         vae_list   = get_vae_list()
         clip_types = ["(preset)"] + _get_clip_types()
 
+        model_sampling_opts = ["(preset)"] + MODEL_SAMPLING_TYPES
+
         return {
             "required": {
                 "model_name": (all_models if all_models else [""], {}),
             },
             "optional": {
                 # ── Must match INFO_ROWS order in cwk_preset_manager.js exactly ──
-                "override_sampler":      (samplers,),                                  # 0  Sampler
-                "override_scheduler":    (schedulers,),                                # 1  Scheduler
-                "override_cfg":          ("FLOAT", {"default": 0.0, "min": 0.0,  "max": 30.0, "step": 0.1}),  # 2  CFG
-                "override_steps":        ("INT",   {"default": 0,   "min": 0,    "max": 200,  "step": 1}),    # 3  Steps
-                "override_clip_skip":    ("INT",   {"default": 0,   "min": -24,  "max": 0,    "step": 1}),    # 4  Clip skip
-                "resolution_preset":     (RESOLUTION_PRESET_NAMES,),                   # 5  Res Preset
-                "override_width":        ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),    # 6  Width
-                "override_height":       ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),    # 7  Height
-                "batch_size":            ("INT",   {"default": 1,   "min": 1,    "max": 64,   "step": 1}),    # 8  Batch
-                "override_rng":          (["(preset)", "cpu", "gpu", "nv"],),          # 9  RNG
-                "override_clip_name":    (["(preset)"] + clip_list,),                  # 10 CLIP
-                "override_clip_type":    (clip_types,),                                # 11 Clip Type  ← NEW
-                "override_vae_name":     (["(preset)"] + vae_list,),                   # 12 VAE
+                # Group 1: RNG & Model Sampling
+                "override_rng":             (["(preset)", "cpu", "gpu", "nv"],),          # 0  RNG
+                "override_model_sampling":  (model_sampling_opts,),                       # 1  Model Sampling
+                # Group 2: CLIP / Clip Type / VAE
+                "override_clip_name":       (["(preset)"] + clip_list,),                  # 2  CLIP
+                "override_clip_type":       (clip_types,),                                # 3  Clip Type
+                "override_vae_name":        (["(preset)"] + vae_list,),                   # 4  VAE
+                # Group 3: Sampler / Scheduler / CFG / Steps / Clip skip
+                "override_sampler":         (samplers,),                                  # 5  Sampler
+                "override_scheduler":       (schedulers,),                                # 6  Scheduler
+                "override_cfg":             ("FLOAT", {"default": 0.0, "min": 0.0,  "max": 30.0, "step": 0.1}),  # 7  CFG
+                "override_steps":           ("INT",   {"default": 0,   "min": 0,    "max": 200,  "step": 1}),    # 8  Steps
+                "override_clip_skip":       ("INT",   {"default": 0,   "min": -24,  "max": 0,    "step": 1}),    # 9  Clip skip
+                # Group 4: Resolution / Batch
+                "resolution_preset":        (RESOLUTION_PRESET_NAMES,),                   # 10 Res Preset
+                "override_width":           ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),    # 11 Width
+                "override_height":          ("INT",   {"default": 0,   "min": 0,    "max": 8192, "step": 8}),    # 12 Height
+                "batch_size":               ("INT",   {"default": 1,   "min": 1,    "max": 64,   "step": 1}),    # 13 Batch
             },
         }
 
@@ -604,19 +675,20 @@ class CWK_ModelPresetManager:
     def execute(
         self,
         model_name: str,
-        override_sampler:   str   = "(preset)",
-        override_scheduler: str   = "(preset)",
-        override_cfg:       float = 0.0,
-        override_steps:     int   = 0,
-        override_clip_skip: int   = 0,
-        override_width:     int   = 0,
-        override_height:    int   = 0,
-        override_rng:       str   = "(preset)",
-        override_clip_name: str   = "(preset)",
-        override_vae_name:  str   = "(preset)",
-        override_clip_type: str   = "(preset)",
-        resolution_preset:  str   = "(preset)",
-        batch_size:         int   = 1,
+        override_sampler:          str   = "(preset)",
+        override_scheduler:        str   = "(preset)",
+        override_cfg:              float = 0.0,
+        override_steps:            int   = 0,
+        override_clip_skip:        int   = 0,
+        override_width:            int   = 0,
+        override_height:           int   = 0,
+        override_rng:              str   = "(preset)",
+        override_model_sampling:   str   = "(preset)",
+        override_clip_name:        str   = "(preset)",
+        override_vae_name:         str   = "(preset)",
+        override_clip_type:        str   = "(preset)",
+        resolution_preset:         str   = "(preset)",
+        batch_size:                int   = 1,
     ) -> Tuple:
         # ── Save last-used model ───────────────────────────────────────────────
         save_last_used_model(model_name)
@@ -648,17 +720,18 @@ class CWK_ModelPresetManager:
         presets = load_presets()
         p       = {**default_preset(), **presets.get(model_name, {})}
 
-        sampler_name = override_sampler   if override_sampler   != "(preset)" else p["sampler_name"]
-        scheduler    = override_scheduler if override_scheduler != "(preset)" else p["scheduler"]
-        cfg          = float(override_cfg)     if override_cfg        != 0.0 else float(p["cfg"])
-        steps        = int(override_steps)     if override_steps      != 0   else int(p["steps"])
-        clip_skip    = int(override_clip_skip) if override_clip_skip  != 0   else int(p["clip_skip"])
-        width        = int(override_width)     if override_width       != 0  else int(p["width"])
-        height       = int(override_height)    if override_height      != 0  else int(p["height"])
-        rng          = override_rng            if override_rng        != "(preset)" else p["rng"]
-        clip_name    = override_clip_name      if override_clip_name  != "(preset)" else p.get("clip_name", "embedded")
-        vae_name     = override_vae_name       if override_vae_name   != "(preset)" else p.get("vae_name",  "embedded")
-        clip_type    = override_clip_type      if override_clip_type  != "(preset)" else p.get("clip_type", "stable_diffusion")
+        sampler_name    = override_sampler          if override_sampler          != "(preset)" else p["sampler_name"]
+        scheduler       = override_scheduler        if override_scheduler        != "(preset)" else p["scheduler"]
+        cfg             = float(override_cfg)       if override_cfg              != 0.0        else float(p["cfg"])
+        steps           = int(override_steps)       if override_steps            != 0          else int(p["steps"])
+        clip_skip       = int(override_clip_skip)   if override_clip_skip        != 0          else int(p["clip_skip"])
+        width           = int(override_width)       if override_width            != 0          else int(p["width"])
+        height          = int(override_height)      if override_height           != 0          else int(p["height"])
+        rng             = override_rng              if override_rng              != "(preset)" else p["rng"]
+        model_sampling  = override_model_sampling   if override_model_sampling   != "(preset)" else p.get("model_sampling", "eps")
+        clip_name       = override_clip_name        if override_clip_name        != "(preset)" else p.get("clip_name", "embedded")
+        vae_name        = override_vae_name         if override_vae_name         != "(preset)" else p.get("vae_name",  "embedded")
+        clip_type       = override_clip_type        if override_clip_type        != "(preset)" else p.get("clip_type", "stable_diffusion")
 
         # ── Apply resolution preset (overrides width/height if not "(preset)") ─
         if resolution_preset and resolution_preset != "(preset)":
@@ -708,6 +781,9 @@ class CWK_ModelPresetManager:
         # ── Apply RNG ─────────────────────────────────────────────────────────
         model = _apply_rng(model, rng)
 
+        # ── Apply Model Sampling type ─────────────────────────────────────────
+        model = _apply_model_sampling(model, model_sampling)
+
         # ── Generate empty latent ─────────────────────────────────────────────
         batch = max(1, batch_size)
         latent = torch.zeros([batch, 4, height // 8, width // 8],
@@ -717,7 +793,7 @@ class CWK_ModelPresetManager:
             f"[CWK] Loaded: {model_name} | "
             f"sampler={sampler_name} sched={scheduler} cfg={cfg} "
             f"steps={steps} clip_skip={clip_skip} "
-            f"res={width}x{height} rng={rng} "
+            f"res={width}x{height} rng={rng} sampling={model_sampling} "
             f"clip={clip_name} clip_type={clip_type} vae={vae_name} batch={batch}"
         )
 
