@@ -49,7 +49,11 @@ function rowByKey(key) {
 }
 
 // ── Group separator indices — a divider line is drawn BEFORE these row indices ──
+<<<<<<< HEAD
 const GROUP_SEPARATORS = new Set([2, 5, 10]);
+=======
+const GROUP_SEPARATORS = new Set([0, 2, 5, 10]);
+>>>>>>> 678555ae7913cd6449e71fc4af08bdabb7ca68fe
 
 const INFO_ROWS = [
   // ── Group 1: RNG & Model Sampling ──
@@ -566,6 +570,55 @@ function drawNode(node, ctx) {
   }
 
   ctx.restore();  // release the rounded-rect clip
+}
+
+// ─── Helper: fully load a model into the node (model name, meta, preset) ──────
+
+async function _loadModelIntoNode(node, modelName) {
+  const getW = name => node.widgets?.find(w => w.name === name);
+  const mw = getW("model_name");
+  if (mw) { mw.value = modelName; mw.callback?.(modelName); }
+  node._cwkModelName = modelName;
+  try {
+    const res = await fetch(`/cwk/civitai/meta?model=${encodeURIComponent(modelName)}`);
+    if (res.ok) node._cwkMeta = await res.json();
+  } catch {}
+  try {
+    const { preset } = await apiFetch(`/cwk/preset?model=${encodeURIComponent(modelName)}`);
+    if (preset) {
+      node._cwkPreset = { ...preset };
+      // Also set batch_size default if not in preset
+      if (node._cwkPreset.batch_size == null) node._cwkPreset.batch_size = 1;
+      // Also set res_preset display
+      if (node._cwkPreset.res_preset == null) node._cwkPreset.res_preset = "(preset)";
+      if (node._cwkPreset.clip_type == null) node._cwkPreset.clip_type = "stable_diffusion";
+      if (node._cwkPreset.model_sampling == null) node._cwkPreset.model_sampling = "eps";
+      const map = {
+        override_rng:              preset.rng,
+        override_model_sampling:   preset.model_sampling ?? "eps",
+        override_clip_name:        preset.clip_name,
+        override_clip_type:        preset.clip_type,
+        override_vae_name:         preset.vae_name,
+        override_sampler:          preset.sampler_name,
+        override_scheduler:        preset.scheduler,
+        override_cfg:              preset.cfg,
+        override_steps:            preset.steps,
+        override_clip_skip:        preset.clip_skip,
+        resolution_preset:         "(preset)",
+        override_width:            preset.width,
+        override_height:           preset.height,
+        batch_size:                preset.batch_size ?? 1,
+      };
+
+      for (const [wn, val] of Object.entries(map)) {
+        const w = getW(wn);
+        if (w && val !== undefined) { w.value = val; w.callback?.(val); }
+      }
+    }
+  } catch {}
+  // Persist as last used model
+  try { await apiFetch("/cwk/last_model", { method: "POST", body: JSON.stringify({ model_name: modelName }) }); } catch {}
+  node.setDirtyCanvas(true);
 }
 
 // ─── Helper: fully load a model into the node (model name, meta, preset) ──────
