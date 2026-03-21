@@ -330,7 +330,8 @@ async def _lookup_by_path(abs_path: str, model_name: str, session, loop) -> dict
 
 def _keep_manual_overrides(new_info: dict, existing: dict) -> dict:
     # Preserve local thumbnail
-    if existing.get("thumbnail", "").startswith("/cwk/local_thumbnails/"):
+    existing_thumb = existing.get("thumbnail") or ""
+    if existing_thumb.startswith("/cwk/local_thumbnails/"):
         new_info["thumbnail"] = existing["thumbnail"]
     # Preserve manual NSFW override
     if existing.get("nsfw_manual") is not None:
@@ -608,8 +609,11 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
                     if images:
                         current_presets = load_presets()
                         if name not in current_presets:
-                            if _auto_populate_preset(name, images):
-                                presets_populated[0] += 1
+                            try:
+                                if _auto_populate_preset(name, images):
+                                    presets_populated[0] += 1
+                            except Exception as e:
+                                print(f"[CWK] Preset auto-populate error for {name}: {e}")
                     await _sse(resp, {
                         "model": name, "info": existing,
                         "index": completed[0], "total": total,
@@ -628,21 +632,28 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
                         return
                     except Exception as e:
                         print(f"[CWK] Lookup error for {name}: {e}")
-                        info = existing or {
+                        info = existing if existing else {
                             "thumbnail":    None,
                             "civitai_name": _clean_name(name),
                             "nsfw_level":   0,
                             "tags":         [],
                         }
 
-                info = _keep_manual_overrides(info, existing)
+                try:
+                    info = _keep_manual_overrides(info, existing)
+                except Exception as e:
+                    print(f"[CWK] _keep_manual_overrides error for {name}: {e}")
+
                 _save_meta(name, info)
 
                 # Auto-populate preset from example images
                 images = info.get("images", [])
                 if images:
-                    if _auto_populate_preset(name, images):
-                        presets_populated[0] += 1
+                    try:
+                        if _auto_populate_preset(name, images):
+                            presets_populated[0] += 1
+                    except Exception as e:
+                        print(f"[CWK] Preset auto-populate error for {name}: {e}")
 
                 completed[0] += 1
                 await _sse(resp, {
@@ -651,7 +662,14 @@ async def _run_sse_fetch(req, names, api_key, force, rebuild=False):
                     "done":  False,
                 })
 
-            await asyncio.gather(*[_bounded(n) for n in names])
+            results = await asyncio.gather(
+                *[_bounded(n) for n in names],
+                return_exceptions=True,
+            )
+            # Log any unexpected exceptions that slipped through
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    print(f"[CWK] Unhandled error in _bounded for {names[i]}: {result}")
 
     except Exception as e:
         print(f"[CWK] SSE fetch outer error: {e}")

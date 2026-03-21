@@ -49,7 +49,7 @@ function rowByKey(key) {
 }
 
 // ── Group separator indices — a divider line is drawn BEFORE these row indices ──
-const GROUP_SEPARATORS = new Set([0, 2, 5, 10]);
+const GROUP_SEPARATORS = new Set([2, 5, 10]);
 
 const INFO_ROWS = [
   // ── Group 1: RNG & Model Sampling ──
@@ -442,6 +442,14 @@ function drawNode(node, ctx) {
   const preset = node._cwkPreset ?? {};
   const hover  = node._cwkHover;
 
+  const cornerR = LiteGraph.NODE_BORDER_RADIUS ?? 8;
+
+  // Clip all custom drawing to the node's rounded rect shape
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(0, 0, w, h, cornerR);
+  ctx.clip();
+
   ctx.fillStyle = C.bgFull;
   ctx.fillRect(0, 0, w, h);
 
@@ -556,6 +564,8 @@ function drawNode(node, ctx) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(label, r.x + r.w/2, r.y + r.h/2, r.w - 8);
   }
+
+  ctx.restore();  // release the rounded-rect clip
 }
 
 // ─── Helper: fully load a model into the node (model name, meta, preset) ──────
