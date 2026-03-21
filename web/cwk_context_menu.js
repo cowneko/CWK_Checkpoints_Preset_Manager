@@ -236,7 +236,7 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
           padding:12px; display:flex; align-items:center; gap:12px;
         `;
 
-        // ── Thumbnail ──────────────────────────────────────────────────────
+        // ── Thumbnail ─────────────────────────────────────────���────────────
         const thumbEl = document.createElement("div");
         thumbEl.style.cssText = `width:48px;height:64px;flex-shrink:0;border-radius:4px;overflow:hidden;background:#181d2e;display:flex;align-items:center;justify-content:center;font-size:20px;`;
         if (thumb) {
@@ -260,7 +260,7 @@ export function showVersionChecker(modelName, apiKey, onDownloadDone) {
         if (v.is_installed) {
           const installedBadge = document.createElement("span");
           installedBadge.style.cssText = "font-size:11px;color:#a6e3a1;";
-          installedBadge.textContent   = "✓ installed";
+          installedBadge.textContent   = v.is_current ? "✓ installed (current)" : "✓ installed";
           nameEl.appendChild(installedBadge);
         }
 

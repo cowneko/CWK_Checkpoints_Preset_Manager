@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.0.0] — 2026-03-21
+
+### Added
+
+#### New `infos` Output on Main Node
+- The **CWK Model Preset Manager** node now has an 11th output pin: **infos** (`STRING`)
+- Outputs a JSON string containing all resolved preset values: `model_name`, `vae_name`, `clip_name`, `clip_type`, `sampler_name`, `scheduler`, `cfg`, `steps`, `clip_skip`, `rng`, `model_sampling`, `width`, `height`, `resolution`, `batch_size`
+- Allows downstream nodes to consume the full preset context as structured data
+
+#### New Companion Node: CWK Infos Extractor
+- New node **CWK Infos Extractor** (`CWK_InfosExtractor`) — takes the `infos` JSON string and fans it out to **15 individual STRING outputs**, one per field
+- Outputs: `model_name`, `vae_name`, `clip_name`, `clip_type`, `sampler_name`, `scheduler`, `cfg`, `steps`, `clip_skip`, `rng`, `model_sampling`, `width`, `height`, `resolution`, `batch_size`
+- Model, VAE, and CLIP names are **automatically cleaned**: subfolder prefixes (e.g. `Pony\`, `Flux\`) and file extensions (`.safetensors`, `.ckpt`) are stripped — e.g. `Pony\autismmixSDXL_autismmixPony.safetensors` → `autismmixSDXL_autismmixPony`
+- Pure Python node in `nodes.py` — no frontend/JS required
+
+#### Installed Version Detection in Version Checker
+- **Check for Updates** and the **Version Checker** modal now detect versions that are already installed under **different filenames**
+- `handle_list_versions()` builds a set of all locally installed `version_id`s for the same `model_id` — a version is marked as `is_installed` even if it was downloaded with a different filename
+- New `is_current` field distinguishes the currently selected file from other installed versions of the same model
+- `handle_check_updates()` pre-builds an `installed_by_model_id` map so the "latest" version is not flagged as an update if it's already installed under any filename
+- Version checker UI shows "✓ installed (current)" vs "✓ installed" badges and displays a 🗑 Delete button instead of ⬇ Download for installed versions
+
+### Changed
+
+- `N_OUTPUTS` in frontend bumped from 10 to **11** to account for the new `infos` output slot
+- `RETURN_TYPES` and `RETURN_NAMES` on `CWK_ModelPresetManager` updated to include `STRING` / `infos`
+- `NODE_CLASS_MAPPINGS` and `NODE_DISPLAY_NAME_MAPPINGS` now include `CWK_InfosExtractor`
+
+### Fixed
+
+- Fixed version checker showing "⬇ Download" for model versions that were already installed under a different filename — now correctly shows "🗑 Delete" instead
+- Fixed "Check Updates" reporting false updates when the latest CivitAI version was already installed as a different local file
+
+---
+
 ## [1.9.0] — 2026-03-17
 
 ### Added

@@ -205,7 +205,6 @@ If a preset or CivitAI metadata contains a sampler or scheduler name that isn't 
 [CWK] Sampler ++ fix: 'euler_ancestral_cfg++' → 'euler_ancestral_cfg_pp'
 [CWK] ⚠ Sampler 'unknown_sampler' not found — falling back to 'euler'
 ```
-
 ### 15. GGUF models
 To use `.gguf` quantized models:
 1. Install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) by city96
@@ -214,9 +213,16 @@ To use `.gguf` quantized models:
 4. Set an external **CLIP** (with the correct **Clip Type**) and **VAE** in the preset, since GGUF models don't include embedded CLIP/VAE
 5. Click **💾 Update Preset** to save these settings — they'll be restored automatically next time
 
+### 16. Infos output & Infos Extractor
+The main node outputs an **infos** STRING pin containing a JSON dict with all resolved preset values. Connect it to the **CWK Infos Extractor** node to fan out individual values as STRING outputs — useful for display nodes, logging, or feeding values to other nodes that accept string inputs.
+
+Model, VAE, and CLIP names are automatically cleaned: `sd15\darkSushiMixMix_colorful.safetensors` becomes `darkSushiMixMix_colorful`.
+
 ---
 
 ## Outputs
+
+### CWK Model Preset Manager
 
 | Output | Type | Description |
 |---|---|---|
@@ -230,8 +236,33 @@ To use `.gguf` quantized models:
 | scheduler | SCHEDULER | Preset or override scheduler (with fallback resolution) |
 | width | INT | Preset or override width |
 | height | INT | Preset or override height |
+| infos | STRING | JSON string with all resolved preset values (see below) |
 
-> `clip_skip`, `rng`, `clip_name`, `clip_type`, `vae_name`, and `batch_size` are applied internally and do not appear as separate output pins (batch_size is reflected in the LATENT tensor dimensions).
+> `clip_skip`, `rng`, `clip_name`, `clip_type`, `vae_name`, and `batch_size` are applied internally and do not appear as separate output pins (batch_size is reflected in the LATENT tensor dimensions). All values are accessible via the `infos` output.
+
+### CWK Infos Extractor
+
+A companion node that takes the `infos` JSON string from the main node and fans it out to individual STRING outputs.
+
+| Output | Description |
+|---|---|
+| model_name | Cleaned model name (no subfolder, no extension) |
+| vae_name | Cleaned VAE name (no subfolder, no extension) |
+| clip_name | Cleaned CLIP name (no subfolder, no extension) |
+| clip_type | CLIP architecture type (e.g. `stable_diffusion`, `flux`) |
+| sampler_name | Resolved sampler name |
+| scheduler | Resolved scheduler name |
+| cfg | CFG scale value |
+| steps | Step count |
+| clip_skip | Clip skip value |
+| rng | RNG source (`cpu`, `gpu`, `nv`) |
+| model_sampling | Model sampling type (`eps`, `v_prediction`, etc.) |
+| width | Image width |
+| height | Image height |
+| resolution | Resolution string (e.g. `1024x1024`) |
+| batch_size | Batch size |
+
+> **Name cleaning:** Model, VAE, and CLIP names have their subfolder prefix (`Pony\`, `Flux\`, etc.) and file extension (`.safetensors`, `.ckpt`) automatically stripped — e.g. `Pony\autismmixSDXL_autismmixPony.safetensors` → `autismmixSDXL_autismmixPony`.
 
 ---
 
@@ -303,7 +334,7 @@ This runs at two points:
 ```
 CWK_Checkpoints_Preset_Manager/
 ├── __init__.py                 # ComfyUI entry point — registers nodes and routes, registers .gguf extension
-├── nodes.py                    # Node definition, preset helpers, sampler/scheduler fallback, CLIP/VAE/RNG/GGUF loaders, resolution presets, last-model persistence
+├── nodes.py                    # Node definitions (CWK_ModelPresetManager + CWK_InfosExtractor), preset helpers, sampler/scheduler fallback, CLIP/VAE/RNG/GGUF loaders, resolution presets, last-model persistence
 ├── cwk_rng_shared.py           # Self-contained RNG options (smZ_opts protocol)
 ├── cwk_rng_philox.py           # Vendored Philox 4×32 NVidia-compatible RNG
 ├── cwk_rng.py                  # prepare_noise, TorchHijack, k-diffusion hijacking

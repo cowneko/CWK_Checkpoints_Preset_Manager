@@ -808,6 +808,16 @@ async def handle_list_versions(req: web.Request) -> web.Response:
                              key=lambda v: v.get("createdAt", ""), reverse=True)
         current_vid = entry.get("version_id")
 
+        # ── Build set of ALL locally installed version IDs for this model ─────
+        # This detects versions installed under different filenames
+        installed_version_ids = set()
+        for m in _all_models():
+            m_meta = _load_meta(m["name"])
+            m_model_id = m_meta.get("model_id")
+            m_version_id = m_meta.get("version_id")
+            if m_model_id == model_id and m_version_id:
+                installed_version_ids.add(m_version_id)
+
         # ── Fetch per-version details in parallel to get earlyAccessEndsAt ───
         sem = asyncio.Semaphore(_CONCURRENCY)
 
@@ -835,15 +845,17 @@ async def handle_list_versions(req: web.Request) -> web.Response:
             detail  = detail_map.get(v.get("id"), {})
             ea_ends = detail.get("earlyAccessEndsAt") or detail.get("earlyAccessDeadline") or None
 
+            vid = v.get("id")
             result.append({
-                "id":                 v.get("id"),
+                "id":                 vid,
                 "name":               v.get("name", ""),
                 "created_at":         v.get("createdAt", ""),
                 "base_model":         v.get("baseModel", ""),
                 "download_url":       mfile.get("downloadUrl", ""),
                 "filename":           mfile.get("name", ""),
                 "size_kb":            mfile.get("sizeKB", 0),
-                "is_installed":       v.get("id") == current_vid,
+                "is_installed":       vid in installed_version_ids,
+                "is_current":         vid == current_vid,
                 "images":             v.get("images", [])[:1],
                 "early_access_ends":  ea_ends,
             })
@@ -897,6 +909,17 @@ async def handle_check_updates(req: web.Request) -> web.Response:
     results  = []
     sem      = asyncio.Semaphore(_CONCURRENCY)
 
+    # ── Pre-build a map: model_id → set of installed version_ids ──────────────
+    # This lets us detect that the "latest" version is already installed
+    # under a different filename.
+    installed_by_model_id = {}
+    for m in models:
+        m_meta = _load_meta(m["name"])
+        mid = m_meta.get("model_id")
+        vid = m_meta.get("version_id")
+        if mid and vid:
+            installed_by_model_id.setdefault(mid, set()).add(vid)
+
     async def _check_one(m):
         meta       = _load_meta(m["name"])
         model_id   = meta.get("model_id")
@@ -914,7 +937,9 @@ async def handle_check_updates(req: web.Request) -> web.Response:
                 if not versions:
                     return
                 latest_id = versions[0].get("id")
-                has_update = (latest_id != current_id)
+                # Check if the latest version is installed under ANY local file
+                all_installed = installed_by_model_id.get(model_id, set())
+                has_update = (latest_id not in all_installed)
                 meta["update_available"]  = has_update
                 meta["latest_version_id"] = latest_id if has_update else None
                 _save_meta(m["name"], meta)

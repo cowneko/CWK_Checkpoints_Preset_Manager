@@ -661,12 +661,14 @@ class CWK_ModelPresetManager:
         comfy.samplers.KSampler.SAMPLERS,
         comfy.samplers.KSampler.SCHEDULERS,
         "INT", "INT",
+        "STRING",
     )
     RETURN_NAMES = (
         "MODEL", "CLIP", "VAE", "LATENT",
         "steps", "cfg",
         "sampler_name", "scheduler",
         "width", "height",
+        "infos",
     )
     FUNCTION    = "execute"
     CATEGORY    = "CWK/presets"
@@ -789,6 +791,25 @@ class CWK_ModelPresetManager:
         latent = torch.zeros([batch, 4, height // 8, width // 8],
                              device="cpu", dtype=torch.float32)
 
+        # ── Build infos JSON string ────────────────────────────────────────────
+        infos = json.dumps({
+            "model_name":    model_name,
+            "vae_name":      vae_name,
+            "clip_name":     clip_name,
+            "clip_type":     clip_type,
+            "sampler_name":  sampler_name,
+            "scheduler":     scheduler,
+            "cfg":           cfg,
+            "steps":         steps,
+            "clip_skip":     clip_skip,
+            "rng":           rng,
+            "model_sampling": model_sampling,
+            "width":         width,
+            "height":        height,
+            "resolution":    f"{width}x{height}",
+            "batch_size":    batch,
+        })
+
         print(
             f"[CWK] Loaded: {model_name} | "
             f"sampler={sampler_name} sched={scheduler} cfg={cfg} "
@@ -798,15 +819,120 @@ class CWK_ModelPresetManager:
         )
 
         return (model, clip, vae, {"samples": latent},
-                steps, cfg, sampler_name, scheduler, width, height)
+                steps, cfg, sampler_name, scheduler, width, height,
+                infos)
 
+# ─── Name cleaning helper ──────────────────────────────────────────────────────
+
+def _clean_model_name(raw: str) -> str:
+    """Strip subfolder prefix and file extension from a model/vae/clip name.
+    e.g.  'Pony\\autismmixSDXL_autismmixPony.safetensors'  →  'autismmixSDXL_autismmixPony'
+          'embedded'  →  'embedded'
+    """
+    if not raw or raw == "embedded":
+        return raw
+    # Remove subfolder prefix  (handles both / and \)
+    name = raw.replace("\\", "/").rsplit("/", 1)[-1]
+    # Remove extension
+    name = re.sub(r'\.[^.]+$', '', name)
+    return name
+
+
+# ─── Companion node: CWK Infos Extractor ───────────────────────────────────────
+
+class CWK_InfosExtractor:
+    """
+    CWK Infos Extractor — companion node for CWK Model Preset Manager.
+
+    Takes the 'infos' JSON string output and fans it out to individual
+    typed outputs. Model, VAE, and CLIP names are cleaned: subfolder
+    prefix and file extension are stripped.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "infos": ("STRING", {"forceInput": True}),
+            },
+        }
+
+    RETURN_TYPES = (
+        "STRING",  # model_name
+        "STRING",  # vae_name
+        "STRING",  # clip_name
+        "STRING",  # clip_type
+        "STRING",  # sampler_name
+        "STRING",  # scheduler
+        "STRING",  # cfg
+        "STRING",  # steps
+        "STRING",  # clip_skip
+        "STRING",  # rng
+        "STRING",  # model_sampling
+        "STRING",  # width
+        "STRING",  # height
+        "STRING",  # resolution
+        "STRING",  # batch_size
+    )
+    RETURN_NAMES = (
+        "model_name",
+        "vae_name",
+        "clip_name",
+        "clip_type",
+        "sampler_name",
+        "scheduler",
+        "cfg",
+        "steps",
+        "clip_skip",
+        "rng",
+        "model_sampling",
+        "width",
+        "height",
+        "resolution",
+        "batch_size",
+    )
+    FUNCTION     = "execute"
+    CATEGORY     = "CWK/presets"
+    OUTPUT_NODE  = False
+
+    def execute(self, infos: str) -> tuple:
+        try:
+            data = json.loads(infos)
+        except (json.JSONDecodeError, TypeError):
+            print("[CWK InfosExtractor] Invalid infos JSON — returning empty strings")
+            return ("",) * 15
+
+        # Clean model/vae/clip names (strip subfolder + extension)
+        model_name = _clean_model_name(str(data.get("model_name", "")))
+        vae_name   = _clean_model_name(str(data.get("vae_name", "")))
+        clip_name  = _clean_model_name(str(data.get("clip_name", "")))
+
+        return (
+            model_name,
+            vae_name,
+            clip_name,
+            str(data.get("clip_type", "")),
+            str(data.get("sampler_name", "")),
+            str(data.get("scheduler", "")),
+            str(data.get("cfg", "")),
+            str(data.get("steps", "")),
+            str(data.get("clip_skip", "")),
+            str(data.get("rng", "")),
+            str(data.get("model_sampling", "")),
+            str(data.get("width", "")),
+            str(data.get("height", "")),
+            str(data.get("resolution", "")),
+            str(data.get("batch_size", "")),
+        )
 
 # ─── Node mappings ────────────────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS = {
     "CWK_ModelPresetManager": CWK_ModelPresetManager,
+    "CWK_InfosExtractor":    CWK_InfosExtractor,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CWK_ModelPresetManager": "CWK Model Preset Manager",
+    "CWK_InfosExtractor":    "CWK Infos Extractor",
 }
