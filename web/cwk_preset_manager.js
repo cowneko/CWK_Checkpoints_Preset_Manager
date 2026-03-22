@@ -24,7 +24,7 @@ const ARROW_W     = 20;
 
 const TITLE_H   = () => LiteGraph.NODE_TITLE_HEIGHT ?? 30;
 const SLOT_H    = () => LiteGraph.NODE_SLOT_HEIGHT  ?? 20;
-const N_OUTPUTS = 10;
+const N_OUTPUTS = 11;
 
 function getSlotsBottom() {
   return TITLE_H() + N_OUTPUTS * SLOT_H() + 6;
@@ -44,35 +44,116 @@ let VAES       = ["embedded"];
 let RES_PRESETS = ["(preset)"];
 let RES_PRESETS_MAP = {};
 
+// ─── Quick-load model dropdowns ───────────────────────────────────────────────
+
+const QUICK_LOAD_H       = 28;
+const QUICK_LOAD_GAP     = 6;
+const QUICK_LOAD_PAD     = 6;
+const GROUP_SEP_H        = 12;
+const QUICK_LOAD_TOTAL_H = QUICK_LOAD_PAD + QUICK_LOAD_H + QUICK_LOAD_PAD + GROUP_SEP_H;
+
+let _quickLoadModels = null;
+let _quickLoadReady  = false;
+
+const _BASE_BADGES = [
+  { match: ["sd 1.5", "sd 1.4", "sd1"],  label: "SD15",   color: "#f9e2af" },
+  { match: ["sdxl turbo"],                label: "SDXL-T", color: "#89dceb" },
+  { match: ["sdxl lightning"],            label: "SDXL-L", color: "#89dceb" },
+  { match: ["sdxl"],                      label: "SDXL",   color: "#89b4fa" },
+  { match: ["illustrious"],              label: "Illust",  color: "#cba6f7" },
+  { match: ["pony"],                      label: "Pony",   color: "#f5c2e7" },
+  { match: ["noobai"],                    label: "Noob",   color: "#f38ba8" },
+  { match: ["flux"],                      label: "Flux",   color: "#a6e3a1" },
+  { match: ["chroma"],                    label: "Chroma", color: "#94e2d5" },
+  { match: ["qwen"],                      label: "Qwen",   color: "#fab387" },
+  { match: ["wan"],                       label: "Wan",    color: "#74c7ec" },
+  { match: ["zimage"],                    label: "ZImg",   color: "#b4befe" },
+];
+
+function _getBaseBadge(baseModel) {
+  if (!baseModel) return { label: "???", color: "#6c7086" };
+  const low = baseModel.toLowerCase();
+  for (const b of _BASE_BADGES) {
+    for (const m of b.match) {
+      if (low.includes(m)) return b;
+    }
+  }
+  return { label: "Other", color: "#6c7086" };
+}
+
+function _cleanDisplayName(name) {
+  let n = name.replace(/\\/g, "/").split("/").pop();
+  return n.replace(/\.[^.]+$/, "");
+}
+
+async function _loadQuickLoadModels() {
+  try {
+    const res = await fetch("/cwk/models");
+    if (!res.ok) return;
+    const models = await res.json();          // ← returns a plain array
+    if (!Array.isArray(models)) return;
+
+    const checkpoints = [];
+    const diffusion   = [];
+
+    for (const m of models) {
+      const entry = {
+        name:      m.name,
+        display:   _cleanDisplayName(m.name),
+        baseModel: m.civitai?.base_model ?? m.civitai?.baseModel ?? "",
+        badge:     _getBaseBadge(m.civitai?.base_model ?? m.civitai?.baseModel ?? ""),
+        type:      m.type ?? "checkpoint",
+      };
+      if (m.type === "diffusion_model" || m.type === "gguf") {
+        diffusion.push(entry);
+      } else {
+        checkpoints.push(entry);
+      }
+    }
+
+    const sorter = (a, b) => {
+      const ba = a.badge.label.toLowerCase();
+      const bb = b.badge.label.toLowerCase();
+      if (ba !== bb) return ba < bb ? -1 : 1;
+      return a.display.toLowerCase().localeCompare(b.display.toLowerCase());
+    };
+    checkpoints.sort(sorter);
+    diffusion.sort(sorter);
+
+    _quickLoadModels = { checkpoints, diffusion };
+    _quickLoadReady  = true;
+  } catch (e) {
+    console.warn("[CWK] Could not load quick-load model list:", e);
+  }
+}
+
+_loadQuickLoadModels();
+
 function rowByKey(key) {
   return INFO_ROWS.find(r => r.key === key);
 }
 
-// ── Group separator indices — a divider line is drawn BEFORE these row indices ──
+// ── Group separator indices ───────────────────────────────────────────────────
 const GROUP_SEPARATORS = new Set([2, 5, 10]);
 
 const INFO_ROWS = [
-  // ── Group 1: RNG & Model Sampling ──
-  { key: "rng",            label: "RNG",            widget: "override_rng",            type: "list",  options: RNGS                },  // 0
-  { key: "model_sampling", label: "Model Sampling", widget: "override_model_sampling", type: "list",  options: MODEL_SAMPLING_TYPES },  // 1
-  // ── Group 2: CLIP / Clip Type / VAE ──
-  { key: "clip_name",     label: "CLIP",       widget: "override_clip_name",  type: "list",  options: CLIPS       },  // 2
-  { key: "clip_type",     label: "Clip Type",  widget: "override_clip_type",  type: "list",  options: CLIP_TYPES  },  // 3
-  { key: "vae_name",      label: "VAE",        widget: "override_vae_name",   type: "list",  options: VAES        },  // 4
-  // ── Group 3: Sampler / Scheduler / CFG / Steps / Clip skip ──
-  { key: "sampler_name",  label: "Sampler",    widget: "override_sampler",    type: "list",  options: SAMPLERS    },  // 5
-  { key: "scheduler",     label: "Scheduler",  widget: "override_scheduler",  type: "list",  options: SCHEDULERS  },  // 6
-  { key: "cfg",           label: "CFG",        widget: "override_cfg",        type: "float", min: 0,   max: 30    },  // 7
-  { key: "steps",         label: "Steps",      widget: "override_steps",      type: "int",   min: 1,   max: 200   },  // 8
-  { key: "clip_skip",     label: "Clip skip",  widget: "override_clip_skip",  type: "int",   min: -24, max: -1    },  // 9
-  // ── Group 4: Resolution / Batch ──
-  { key: "res_preset",    label: "Res Preset", widget: "resolution_preset",   type: "list",  options: RES_PRESETS  },  // 10
-  { key: "width",         label: "Width",      widget: "override_width",      type: "int",   min: 64,  max: 8192  },  // 11
-  { key: "height",        label: "Height",     widget: "override_height",     type: "int",   min: 64,  max: 8192  },  // 12
-  { key: "batch_size",    label: "Batch",      widget: "batch_size",          type: "int",   min: 1,   max: 64    },  // 13
+  { key: "rng",            label: "RNG",            widget: "override_rng",            type: "list",  options: RNGS                },
+  { key: "model_sampling", label: "Model Sampling", widget: "override_model_sampling", type: "list",  options: MODEL_SAMPLING_TYPES },
+  { key: "clip_name",     label: "CLIP",       widget: "override_clip_name",  type: "list",  options: CLIPS       },
+  { key: "clip_type",     label: "Clip Type",  widget: "override_clip_type",  type: "list",  options: CLIP_TYPES  },
+  { key: "vae_name",      label: "VAE",        widget: "override_vae_name",   type: "list",  options: VAES        },
+  { key: "sampler_name",  label: "Sampler",    widget: "override_sampler",    type: "list",  options: SAMPLERS    },
+  { key: "scheduler",     label: "Scheduler",  widget: "override_scheduler",  type: "list",  options: SCHEDULERS  },
+  { key: "cfg",           label: "CFG",        widget: "override_cfg",        type: "float", min: 0,   max: 30    },
+  { key: "steps",         label: "Steps",      widget: "override_steps",      type: "int",   min: 1,   max: 200   },
+  { key: "clip_skip",     label: "Clip skip",  widget: "override_clip_skip",  type: "int",   min: -24, max: -1    },
+  { key: "res_preset",    label: "Res Preset", widget: "resolution_preset",   type: "list",  options: RES_PRESETS  },
+  { key: "width",         label: "Width",      widget: "override_width",      type: "int",   min: 64,  max: 8192  },
+  { key: "height",        label: "Height",     widget: "override_height",     type: "int",   min: 64,  max: 8192  },
+  { key: "batch_size",    label: "Batch",      widget: "batch_size",          type: "int",   min: 1,   max: 64    },
 ];
 
-// ─── Async data loaders (single definitions, no duplicates) ───────────────────
+// ─── Async data loaders ───────────────────────────────────────────────────────
 
 async function _loadResolutionPresets() {
   try {
@@ -113,7 +194,6 @@ async function _loadSamplerOptions() {
     const clipTypes = (inputs?.optional?.override_clip_type?.[0] ?? []).filter(v => v !== "(preset)");
     if (clipTypes.length) { CLIP_TYPES = clipTypes; const r = rowByKey("clip_type"); if (r) r.options = clipTypes; }
 
-    // Load model sampling types from object_info
     const modelSamplingOpts = (inputs?.optional?.override_model_sampling?.[0] ?? []).filter(v => v !== "(preset)");
     if (modelSamplingOpts.length) {
       const r = rowByKey("model_sampling");
@@ -167,7 +247,6 @@ const C = {
   flashGreen: "#a6e3a1",
 };
 
-// ─── Node default colors ──────────────────────────────────────────────────────
 const NODE_COLOR   = "#141824";
 const NODE_BGCOLOR = "#1e2335";
 
@@ -192,8 +271,6 @@ function loadImage(url) {
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
-const GROUP_SEP_H = 12;  // extra vertical space for group divider
-
 function getThumbRect(node) {
   const regionTop    = TITLE_H();
   const regionBottom = getSlotsBottom();
@@ -208,11 +285,31 @@ function getThumbRect(node) {
 function getInfoAreaX()     { return PAD + THUMB_W + PAD; }
 function getInfoAreaW(node) { return node.size[0] - getInfoAreaX() - PAD; }
 
-function getRowsStartY(node) {
+function _getBaseRowsY(node) {
+  // The Y where quick-load area starts (before adding quick-load height)
   const thumbRect   = getThumbRect(node);
   const thumbBottom = thumbRect.y + thumbRect.h + PAD;
   const slotsBottom = getSlotsBottom() + PAD;
   return Math.max(thumbBottom, slotsBottom);
+}
+
+function getQuickLoadY(node) {
+  return _getBaseRowsY(node) + QUICK_LOAD_PAD;
+}
+
+function getQuickLoadRects(node) {
+  const y    = getQuickLoadY(node);
+  const x    = PAD;
+  const w    = node.size[0] - PAD * 2;
+  const half = Math.floor((w - QUICK_LOAD_GAP) / 2);
+  return [
+    { x,                              y, w: half,                       h: QUICK_LOAD_H, kind: "checkpoint" },
+    { x: x + half + QUICK_LOAD_GAP,  y, w: w - half - QUICK_LOAD_GAP, h: QUICK_LOAD_H, kind: "diffusion"  },
+  ];
+}
+
+function getRowsStartY(node) {
+  return _getBaseRowsY(node) + QUICK_LOAD_TOTAL_H;
 }
 
 function getRowY(node, i) {
@@ -270,6 +367,15 @@ function hitTestRow(node, lx, ly) {
     if (lx >= vr.x + vr.w - ARROW_W && lx <= vr.x + vr.w) return { rowIdx: i, part: "right"  };
     if (lx >= vr.x && lx <= vr.x + vr.w)                   return { rowIdx: i, part: "center" };
     return { rowIdx: i, part: null };
+  }
+  return null;
+}
+
+function hitTestQuickLoad(node, lx, ly) {
+  for (const qlr of getQuickLoadRects(node)) {
+    if (lx >= qlr.x && lx <= qlr.x + qlr.w && ly >= qlr.y && ly <= qlr.y + qlr.h) {
+      return qlr.kind;
+    }
   }
   return null;
 }
@@ -426,6 +532,138 @@ function closeDropdown() {
   }
 }
 
+// ─── Quick-load model dropdown (HTML overlay) ──────────────────────────────────
+
+function closeQuickLoad() {
+  const el = document.getElementById("cwk-quickload-backdrop");
+  if (el) el.remove();
+}
+
+function openQuickLoadDropdown(node, kind) {
+  closeQuickLoad();
+  closeInlineEditor();
+  closeDropdown();
+
+  if (!_quickLoadReady || !_quickLoadModels) {
+    console.warn("[CWK] Quick-load model list not ready yet");
+    return;
+  }
+
+  const list = kind === "checkpoint" ? _quickLoadModels.checkpoints : _quickLoadModels.diffusion;
+  if (!list.length) return;
+
+  const rects = getQuickLoadRects(node);
+  const qlr   = kind === "checkpoint" ? rects[0] : rects[1];
+  const sc    = _canvasToScreen(node, qlr);
+
+  const backdrop = document.createElement("div");
+  backdrop.id = "cwk-quickload-backdrop";
+  Object.assign(backdrop.style, {
+    position: "fixed", inset: "0", zIndex: "99998", background: "transparent",
+  });
+  _blockCanvasEvents(backdrop);
+
+  const drop = document.createElement("div");
+  Object.assign(drop.style, {
+    position: "fixed",
+    left:       sc.x + "px",
+    top:        (sc.y + sc.h + 2) + "px",
+    width:      Math.max(280, sc.w) + "px",
+    maxHeight:  "320px",
+    overflowY:  "auto",
+    background: C.bgFull,
+    border:     `1px solid ${C.border}`,
+    borderRadius: "6px",
+    boxShadow:  "0 8px 32px rgba(0,0,0,.65)",
+    zIndex:     "99999",
+    fontFamily: "Inter, system-ui, sans-serif",
+    padding:    "4px 0",
+  });
+  _blockCanvasEvents(drop);
+
+  let lastBadge = "";
+  for (const m of list) {
+    if (m.badge.label !== lastBadge) {
+      lastBadge = m.badge.label;
+      const header = document.createElement("div");
+      Object.assign(header.style, {
+        padding: "4px 10px 2px 10px",
+        fontSize: "10px",
+        fontWeight: "700",
+        color: m.badge.color,
+        textTransform: "uppercase",
+        letterSpacing: "0.5px",
+        borderTop: lastBadge !== list[0].badge.label ? `1px solid ${C.border}` : "none",
+        marginTop: lastBadge !== list[0].badge.label ? "2px" : "0",
+      });
+      header.textContent = m.badge.label;
+      drop.appendChild(header);
+    }
+
+    const item = document.createElement("div");
+    Object.assign(item.style, {
+      padding:    "5px 10px 5px 10px",
+      fontSize:   "12px",
+      color:      C.text,
+      cursor:     "pointer",
+      display:    "flex",
+      alignItems: "center",
+      gap:        "6px",
+      transition: "background .1s",
+    });
+
+    const badge = document.createElement("span");
+    Object.assign(badge.style, {
+      fontSize:     "9px",
+      fontWeight:   "700",
+      background:   m.badge.color,
+      color:        "#1e1e2e",
+      borderRadius: "3px",
+      padding:      "1px 4px",
+      flexShrink:   "0",
+      minWidth:     "32px",
+      textAlign:    "center",
+    });
+    badge.textContent = m.badge.label;
+
+    const nameSpan = document.createElement("span");
+    Object.assign(nameSpan.style, {
+      overflow:     "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace:   "nowrap",
+      flex:         "1",
+    });
+    nameSpan.textContent = m.display;
+
+    item.appendChild(badge);
+    item.appendChild(nameSpan);
+    item.title = m.name;
+
+    item.addEventListener("mouseenter", () => { item.style.background = C.hoverBg; });
+    item.addEventListener("mouseleave", () => { item.style.background = ""; });
+    item.addEventListener("click", () => {
+      closeQuickLoad();
+      _loadModelIntoNode(node, m.name);
+    });
+
+    drop.appendChild(item);
+  }
+
+  backdrop.addEventListener("pointerdown", () => closeQuickLoad());
+  backdrop.appendChild(drop);
+  document.body.appendChild(backdrop);
+
+  requestAnimationFrame(() => {
+    const r = drop.getBoundingClientRect();
+    if (r.bottom > window.innerHeight) {
+      drop.style.top = (sc.y - r.height - 2) + "px";
+    }
+    if (r.right > window.innerWidth) {
+      drop.style.left = (window.innerWidth - r.width - 8) + "px";
+    }
+  });
+}
+
 // ─── Draw ─────────────────────────────────────────────────────────────────────
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -496,7 +734,44 @@ function drawNode(node, ctx) {
     ctx.fillText(node._cwkModelName.replace(/^.*[/\\]/,""), infoX, ny + 38, infoW);
   }
 
-  // ── Divider ──
+  // ── Quick-load dropdowns ──
+  {
+    const [ckptRect, diffRect] = getQuickLoadRects(node);
+    const hoverQL = node._cwkHoverQL ?? null;
+
+    for (const qlr of [ckptRect, diffRect]) {
+      const hovered = (hoverQL === qlr.kind);
+      const label   = qlr.kind === "checkpoint" ? "⚡ Checkpoint" : "⚡ Diff / GGUF";
+
+      roundRect(ctx, qlr.x, qlr.y, qlr.w, qlr.h, 4);
+      ctx.fillStyle   = hovered ? C.hoverBg : C.surface;
+      ctx.strokeStyle = hovered ? C.arrowHov : C.border;
+      ctx.lineWidth   = 1;
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle    = hovered ? C.arrowHov : C.textDim;
+      ctx.font         = "bold 10px Inter, system-ui, sans-serif";
+      ctx.textAlign    = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, qlr.x + qlr.w / 2, qlr.y + qlr.h / 2);
+
+      ctx.fillStyle = hovered ? C.arrowHov : C.textDim;
+      ctx.textAlign = "right";
+      ctx.fillText("▾", qlr.x + qlr.w - 6, qlr.y + qlr.h / 2);
+    }
+
+    // Separator line below quick-load area
+    const sepY = ckptRect.y + ckptRect.h + QUICK_LOAD_PAD;
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth   = 1;
+    ctx.beginPath();
+    ctx.moveTo(PAD, sepY);
+    ctx.lineTo(w - PAD, sepY);
+    ctx.stroke();
+  }
+
+  // ── Divider above rows ──
   ctx.strokeStyle = C.border; ctx.lineWidth = 1;
   ctx.beginPath();
   const divY = getRowsStartY(node) - PAD/2;
@@ -511,7 +786,6 @@ function drawNode(node, ctx) {
     const isHov   = hover?.rowIdx === i;
     const hovPart = isHov ? hover.part : null;
 
-    // ── Group separator line ──
     if (GROUP_SEPARATORS.has(i)) {
       const sepY = ry - GROUP_SEP_H / 2 - 1;
       ctx.strokeStyle = C.border; ctx.lineWidth = 1;
@@ -565,10 +839,10 @@ function drawNode(node, ctx) {
     ctx.fillText(label, r.x + r.w/2, r.y + r.h/2, r.w - 8);
   }
 
-  ctx.restore();  // release the rounded-rect clip
+  ctx.restore();
 }
 
-// ─── Helper: fully load a model into the node (model name, meta, preset) ──────
+// ─── Helper: fully load a model into the node ─────────────────────────────────
 
 async function _loadModelIntoNode(node, modelName) {
   const getW = name => node.widgets?.find(w => w.name === name);
@@ -583,9 +857,7 @@ async function _loadModelIntoNode(node, modelName) {
     const { preset } = await apiFetch(`/cwk/preset?model=${encodeURIComponent(modelName)}`);
     if (preset) {
       node._cwkPreset = { ...preset };
-      // Also set batch_size default if not in preset
       if (node._cwkPreset.batch_size == null) node._cwkPreset.batch_size = 1;
-      // Also set res_preset display
       if (node._cwkPreset.res_preset == null) node._cwkPreset.res_preset = "(preset)";
       if (node._cwkPreset.clip_type == null) node._cwkPreset.clip_type = "stable_diffusion";
       if (node._cwkPreset.model_sampling == null) node._cwkPreset.model_sampling = "eps";
@@ -605,15 +877,14 @@ async function _loadModelIntoNode(node, modelName) {
         override_height:           preset.height,
         batch_size:                preset.batch_size ?? 1,
       };
-
       for (const [wn, val] of Object.entries(map)) {
         const w = getW(wn);
         if (w && val !== undefined) { w.value = val; w.callback?.(val); }
       }
     }
   } catch {}
-  // Persist as last used model
   try { await apiFetch("/cwk/last_model", { method: "POST", body: JSON.stringify({ model_name: modelName }) }); } catch {}
+  _loadQuickLoadModels();
   node.setDirtyCanvas(true);
 }
 
@@ -634,6 +905,7 @@ app.registerExtension({
       node._cwkMeta       = null;
       node._cwkPreset     = {};
       node._cwkModelName  = null;
+      node._cwkHoverQL    = null;
 
       node.color   = NODE_COLOR;
       node.bgcolor = NODE_BGCOLOR;
@@ -643,7 +915,6 @@ app.registerExtension({
           w.type = "hidden"; w.hidden = true;
           w.computeSize = () => [0, -4];
         }
-        // ── Ensure all combo widgets start with valid defaults ──
         const getW = name => node.widgets?.find(w => w.name === name);
         const rp = getW("resolution_preset");
         if (rp) rp.value = "(preset)";
@@ -659,9 +930,7 @@ app.registerExtension({
         app.canvas.setDirty(true, true);
       }, 0);
 
-      // ── NEW: Restore last-used model on node creation ────────────────────
       setTimeout(async () => {
-        // Only auto-restore if no model is already loaded (fresh node)
         if (node._cwkModelName) return;
         try {
           const res = await fetch("/cwk/last_model");
@@ -683,6 +952,13 @@ app.registerExtension({
       };
 
       node.onMouseDown = function (e, pos) {
+        // ── Quick-load dropdowns ──
+        const qlKind = hitTestQuickLoad(this, pos[0], pos[1]);
+        if (qlKind) {
+          openQuickLoadDropdown(node, qlKind);
+          return true;
+        }
+
         const btnKey = hitTestButton(this, pos[0], pos[1]);
         if (btnKey) { handleButtonClick(node, btnKey); return true; }
         const hit = hitTestRow(this, pos[0], pos[1]);
@@ -693,7 +969,6 @@ app.registerExtension({
         if (row.type === "list") {
           openDropdown(node, rowIdx, cur, val => {
             applyRowValue(node, rowIdx, val);
-            // ── NEW: If resolution preset changed, update width/height ──
             if (row.key === "res_preset" && val !== "(preset)") {
               const dims = RES_PRESETS_MAP[val];
               if (dims && dims.width > 0 && dims.height > 0) {
@@ -724,6 +999,13 @@ app.registerExtension({
       };
 
       node.onMouseMove = function (e, pos) {
+        // ── Quick-load hover ──
+        const qlHover = hitTestQuickLoad(this, pos[0], pos[1]);
+        if ((node._cwkHoverQL ?? null) !== qlHover) {
+          node._cwkHoverQL = qlHover;
+          app.canvas.setDirty(true, false);
+        }
+
         const btnKey = hitTestButton(this, pos[0], pos[1]);
         if (btnKey) {
           if (!node._cwkHover || node._cwkHover.key !== btnKey) {
@@ -740,37 +1022,30 @@ app.registerExtension({
 
       node.onMouseLeave = function () {
         if (node._cwkHover !== null) { node._cwkHover = null; app.canvas.setDirty(true, false); }
+        if (node._cwkHoverQL !== null) { node._cwkHoverQL = null; app.canvas.setDirty(true, false); }
       };
     };
   },
 
-  // ── NEW: Handle image-with-metadata dropped onto canvas ──────────────────
   async nodeCreated(node) {
     if (node.comfyClass !== NODE_TYPE) return;
 
-    // Hook into handleFile to intercept image drops with PNG metadata
     const origHandleFile = node.handleFile?.bind(node);
     node.handleFile = async function (file) {
       if (origHandleFile) origHandleFile(file);
       if (!file || !file.type?.startsWith("image/")) return;
 
       try {
-        // Read PNG text chunks for ComfyUI workflow/prompt metadata
         const buffer = await file.arrayBuffer();
         const text   = new TextDecoder().decode(buffer);
 
-        // Try to find a ComfyUI-style "prompt" JSON embedded in the image
         let promptData = null;
-        // Method 1: look for the "prompt" PNG tEXt chunk pattern
         const promptMatch = text.match(/"prompt"\s*:\s*(\{[\s\S]*\})/);
         if (promptMatch) {
           try { promptData = JSON.parse(promptMatch[1]); } catch {}
         }
-        // Method 2: look for A1111-style parameters in EXIF
-        const a1111Match = text.match(/(?:parameters|EXIF)\s*[:\n]([\s\S]*?)(?:Negative prompt:|$)/i);
 
         if (promptData) {
-          // ComfyUI workflow metadata — find the checkpoint loader node
           for (const [, nodeData] of Object.entries(promptData)) {
             const inputs = nodeData?.inputs;
             if (!inputs) continue;
@@ -782,11 +1057,9 @@ app.registerExtension({
           }
         }
 
-        // Try to find model name from A1111-style "Model: xxx" or "Model hash: xxx"
         const modelMatch = text.match(/Model:\s*([^\n,]+)/i);
         if (modelMatch) {
           const modelHint = modelMatch[1].trim();
-          // Try to find a matching checkpoint by partial name
           try {
             const listRes = await fetch("/cwk/models");
             if (listRes.ok) {

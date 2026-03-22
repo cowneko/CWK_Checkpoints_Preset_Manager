@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.1.0] — 2026-03-22
+
+### Added
+
+#### Quick-Load Model Dropdowns on Node
+- Two new **quick-load dropdown buttons** drawn directly on the node canvas, positioned side-by-side above the preset rows:
+  - **⚡ Checkpoint** — lists all checkpoint models
+  - **⚡ Diff / GGUF** — lists all diffusion models and GGUF models
+- Models are **grouped by base model type** with colored badge pills: SD15, SDXL, SDXL-T (Turbo), SDXL-L (Lightning), Illust (Illustrious), Pony, Noob (NoobAI), Flux, Chroma, Qwen, Wan, ZImg, and Other
+- Within each group, models are sorted alphabetically by cleaned display name (subfolder and extension stripped)
+- Clicking an entry immediately loads the model with its saved preset, thumbnail, and metadata — identical to using the Model Browser panel
+- Quick-load model list is fetched from `/cwk/models` at startup and **refreshed automatically** after every model load
+- Hover state on the quick-load buttons with visual feedback (border and text color change)
+- HTML overlay dropdown with grouped headers, badge pills, and fuzzy-scroll — positioned intelligently to stay on screen
+
+### Changed
+
+- `getRowsStartY()` now accounts for the quick-load area height (`QUICK_LOAD_TOTAL_H`) above the preset rows
+- New layout helpers: `getQuickLoadY()`, `getQuickLoadRects()`, `_getBaseRowsY()`
+- New hit-test function: `hitTestQuickLoad()` — returns `"checkpoint"` or `"diffusion"` when the pointer is over a quick-load button
+- New node state property: `node._cwkHoverQL` — tracks hover state for quick-load buttons independently from row hover
+- `onMouseDown` handler updated to check quick-load hit before row/button hit
+- `onMouseMove` handler updated to track quick-load hover state
+- `onMouseLeave` handler updated to clear quick-load hover state
+- `drawNode()` updated to render the two quick-load dropdown buttons with hover states, badge text, dropdown arrow, and a separator line below
+- `calcNodeHeight()` accounts for the additional quick-load area in the node height calculation
+- Quick-load dropdown uses the same `_loadModelIntoNode()` path as the Model Browser for full consistency
+- New constants: `QUICK_LOAD_H`, `QUICK_LOAD_GAP`, `QUICK_LOAD_PAD`, `QUICK_LOAD_TOTAL_H`
+- New functions: `_loadQuickLoadModels()`, `_cleanDisplayName()`, `_getBaseBadge()`, `openQuickLoadDropdown()`, `closeQuickLoad()`
+
+### Fixed
+
+- Fixed `/cwk/models` response parsing in quick-load loader — correctly handles the endpoint returning a plain array (not `{ models: [...] }`)
+
+---
+
 ## [2.0.0] — 2026-03-21
 
 ### Added

@@ -16,6 +16,7 @@ A [ComfyUI](https://github.com/comfyanonymous/ComfyUI) custom node that combines
 - Node size auto-calculated based on content; minimum width enforced
 - **Last-used model persistence** — the node remembers the last loaded model and automatically restores it on page refresh or ComfyUI restart
 - **Image metadata drag-and-drop** — drag an image with embedded metadata onto the node to automatically load the model that generated it
+- **Quick-load model dropdowns** — two dropdown buttons drawn directly on the node (⚡ Checkpoint and ⚡ Diff / GGUF) for instant model switching without opening the Model Browser; models are grouped and badged by base model type (SD15, SDXL, Pony, Flux, etc.)
 
 ### 💾 Per-Model Preset System
 - Save and load generation presets **per checkpoint model** — each model remembers its own settings
@@ -217,6 +218,26 @@ To use `.gguf` quantized models:
 The main node outputs an **infos** STRING pin containing a JSON dict with all resolved preset values. Connect it to the **CWK Infos Extractor** node to fan out individual values as STRING outputs — useful for display nodes, logging, or feeding values to other nodes that accept string inputs.
 
 Model, VAE, and CLIP names are automatically cleaned: `sd15\darkSushiMixMix_colorful.safetensors` becomes `darkSushiMixMix_colorful`.
+
+### 17. Quick-load model switching
+Use the **⚡ Checkpoint** and **⚡ Diff / GGUF** dropdown buttons on the node to instantly switch between models without opening the Model Browser panel. Models are grouped by base model type with colored badges:
+
+| Badge | Architectures |
+|---|---|
+| **SD15** | SD 1.4, SD 1.5 |
+| **SDXL** | SDXL 1.0 |
+| **SDXL-T** | SDXL Turbo |
+| **SDXL-L** | SDXL Lightning |
+| **Illust** | Illustrious |
+| **Pony** | Pony |
+| **Noob** | NoobAI |
+| **Flux** | Flux.1 |
+| **Chroma** | Chroma |
+| **Qwen** | Qwen |
+| **Wan** | Wan |
+| **ZImg** | ZImage |
+
+Clicking a model loads it immediately with its saved preset, thumbnail, and metadata. The model list refreshes automatically whenever you load a new model.
 
 ---
 
