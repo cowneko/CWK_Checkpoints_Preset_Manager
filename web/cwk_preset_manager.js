@@ -229,7 +229,7 @@ _loadClipVaeOptions();
 _loadResolutionPresets();
 
 const BTNS = [
-  { label: "📂 Load Model",    key: "load"   },
+  { label: "📂 Models Manager",    key: "load"   },
   { label: "↩ Reset",          key: "reset"  },
   { label: "💾 Update Preset", key: "update" },
 ];
@@ -256,6 +256,18 @@ const BTN_COLORS = {
   update: { border: "#313552", hoverBorder: "#f38ba8", hoverText: "#f38ba8" },
 };
 
+// ─── Video URL detection ──────────────────────────────────────────────────────
+function _isVideoUrl(url) {
+  if (!url) return false;
+  try {
+    const p = new URL(url).pathname.toLowerCase();
+    return p.endsWith(".mp4") || p.endsWith(".webm");
+  } catch {
+    const l = url.toLowerCase();
+    return l.includes(".mp4") || l.includes(".webm");
+  }
+}
+
 // ─── Image cache ──────────────────────────────────────────────────────────────
 
 const _imgCache = new Map();
@@ -263,10 +275,43 @@ function loadImage(url) {
   if (!url) return null;
   if (_imgCache.has(url)) return _imgCache.get(url);
   const img = new Image();
+  img.crossOrigin = "anonymous";
   img.onload = () => app.canvas.setDirty(true, false);
   img.src = url;
   _imgCache.set(url, img);
   return img;
+}
+
+// ─── Thumbnail resolution: pick the best displayable image ────────────────────
+//  1. Use meta.thumbnail if it's a non-video URL
+//  2. Otherwise scan meta.images[] for the first non-video, SFW image
+//  3. If only NSFW images exist, pick the least NSFW non-video one (will be blurred)
+//  4. If only videos exist, return null (show placeholder)
+
+function _resolveThumbForNode(meta) {
+  // Result: { url, blur }
+  const thumb = meta?.thumbnail;
+
+  // If the main thumbnail is a usable image, use it
+  if (thumb && !_isVideoUrl(thumb)) {
+    return { url: thumb, blur: false };
+  }
+
+  // Scan example images for a fallback
+  const images = meta?.images;
+  if (!Array.isArray(images) || !images.length) return { url: null, blur: false };
+
+  // Filter out videos
+  const stills = images.filter(img => img?.url && !_isVideoUrl(img.url));
+  if (!stills.length) return { url: null, blur: false };
+
+  // Find the first SFW image (nsfwLevel <= 1)
+  const sfw = stills.find(img => (img.nsfwLevel ?? 0) <= 1);
+  if (sfw) return { url: sfw.url, blur: false };
+
+  // No SFW image — pick the least NSFW one and flag for blur
+  const sorted = [...stills].sort((a, b) => (a.nsfwLevel ?? 0) - (b.nsfwLevel ?? 0));
+  return { url: sorted[0].url, blur: true };
 }
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
@@ -695,21 +740,40 @@ function drawNode(node, ctx) {
   ctx.fillStyle  = C.bg;
   ctx.fillRect(0, contentY, w, h - contentY);
 
-  // ── Thumbnail ──
-  const img = loadImage(meta.thumbnail ?? null);
+  // ── Thumbnail (static image, with video→still fallback) ──
+  const resolved = _resolveThumbForNode(meta);
+  const img      = loadImage(resolved.url);
+
   roundRect(ctx, thumbR.x, thumbR.y, thumbR.w, thumbR.h, 6);
   ctx.fillStyle = C.surface; ctx.fill();
   ctx.strokeStyle = C.border; ctx.lineWidth = 1; ctx.stroke();
+
   if (img?.complete && img.naturalWidth > 0) {
     ctx.save();
     roundRect(ctx, thumbR.x, thumbR.y, thumbR.w, thumbR.h, 6); ctx.clip();
+
+    // Apply blur for NSFW-only fallback images
+    if (resolved.blur) ctx.filter = "blur(12px)";
+
     const ir = img.naturalWidth / img.naturalHeight;
     const tr = thumbR.w / thumbR.h;
     let sw, sh, sx, sy;
     if (ir > tr) { sh = img.naturalHeight; sw = sh * tr; sx = (img.naturalWidth - sw)/2; sy = 0; }
     else         { sw = img.naturalWidth;  sh = sw / tr; sy = (img.naturalHeight - sh)/2; sx = 0; }
     ctx.drawImage(img, sx, sy, sw, sh, thumbR.x, thumbR.y, thumbR.w, thumbR.h);
+
+    if (resolved.blur) ctx.filter = "none";
     ctx.restore();
+
+    // Show a small eye icon on blurred images
+    if (resolved.blur) {
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      roundRect(ctx, thumbR.x + 4, thumbR.y + thumbR.h - 22, 26, 18, 4);
+      ctx.fill();
+      ctx.fillStyle = "#cdd6f4"; ctx.font = "11px sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("🔞", thumbR.x + 4 + 13, thumbR.y + thumbR.h - 13);
+    }
   } else {
     ctx.fillStyle = C.textDim; ctx.font = "28px sans-serif";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -760,15 +824,6 @@ function drawNode(node, ctx) {
       ctx.textAlign = "right";
       ctx.fillText("▾", qlr.x + qlr.w - 6, qlr.y + qlr.h / 2);
     }
-
-    // Separator line below quick-load area
-    const sepY = ckptRect.y + ckptRect.h + QUICK_LOAD_PAD;
-    ctx.strokeStyle = C.border;
-    ctx.lineWidth   = 1;
-    ctx.beginPath();
-    ctx.moveTo(PAD, sepY);
-    ctx.lineTo(w - PAD, sepY);
-    ctx.stroke();
   }
 
   // ── Divider above rows ──
