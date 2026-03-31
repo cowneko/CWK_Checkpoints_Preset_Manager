@@ -87,6 +87,11 @@ RESOLUTION_PRESETS: Dict[str, Tuple[int, int]] = {
     "Flux 3:2  (1216×832)":   (1216, 832),
     "Flux 9:16 (768×1344)":   (768,  1344),
     "Flux 16:9 (1344×768)":   (1344, 768),
+    # ── Wan / Video models (1280+ base) ──
+    "Wan 16:9  (832×480)":    (832, 480),
+    "Wan 9:16  (480×832)":    (480,  832),
+    "Wan 16:9  (1280×720)":   (1280, 720),
+    "Wan 9:16  (720×1280)":   (720,  1280),
 }
 
 RESOLUTION_PRESET_NAMES = list(RESOLUTION_PRESETS.keys())
